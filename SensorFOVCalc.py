@@ -29,11 +29,16 @@ def _get_git_meta(default_version="5.0.11"):
                 version = version[1:]
         except Exception:
             version = default_version
-        return version, branch
+        # Build number as total commit count on the current branch
+        try:
+            build = subprocess.check_output(["git", "rev-list", "--count", "HEAD"], cwd=repo_dir, stderr=subprocess.DEVNULL).decode().strip()
+        except Exception:
+            build = "local"
+        return version, branch, build
     except Exception:
-        return default_version, "unknown"
+        return default_version, "unknown", "local"
 
-APP_VERSION, APP_BRANCH = _get_git_meta()
+APP_VERSION, APP_BRANCH, APP_BUILD = _get_git_meta()
 
 GRAPH_TITLE_FONTSIZE = 14
 GRAPH_LABEL_FONTSIZE = 14
@@ -72,14 +77,14 @@ def safe_float(val, default):
 class ProjectionApp:
     def __init__(self, root):
         self.root = root
-        self.root.title(f"SENSOR SIMULATION {APP_VERSION} ({APP_BRANCH})")
+        self.root.title(f"SENSOR SIMULATION v{APP_VERSION} ({APP_BUILD}) ({APP_BRANCH})")
         self.root.geometry("1900x1000")
 
         # Create top frame for title and help button
         top_frame = tk.Frame(root)
         top_frame.grid(row=0, column=0, columnspan=2, pady=(10, 0), sticky="ew")
         
-        title_label = tk.Label(top_frame, text=f"SENSOR SIMULATION {APP_VERSION} ({APP_BRANCH})", font=("Arial", 20, "bold"))
+        title_label = tk.Label(top_frame, text=f"SENSOR SIMULATION v{APP_VERSION} ({APP_BUILD}) ({APP_BRANCH})", font=("Arial", 20, "bold"))
         title_label.pack(side=tk.LEFT, padx=(10, 0))
         
         # Add help button
@@ -404,7 +409,9 @@ class ProjectionApp:
         deadzone_px = int((1000.0 * float(deadzone_mm)) / float(pixel_pitch_um))
 
         # Get plot data for a single tile (1x1 setup)
-        plot_data = get_plot_data(params, smoothness=params.get('Smoothness', 2))
+        # Note: legacy projection_calculations.get_plot_data may not accept 'smoothness'
+        # so we call it without keyword to preserve compatibility.
+        plot_data = get_plot_data(params)
 
         # Step 1 & 2: Get initial IFOV values from projection calculations
         target_ifov = params.get("Resolution", 0.22)        # Target resolution/IFOV from user
@@ -492,6 +499,9 @@ class ProjectionApp:
         # This gives us the actual maximum distance in the projected view
         proj_rect_pts = plot_data.get('proj_rect_pts', None)
         if proj_rect_pts is not None:
+            # Provide compatibility arrays expected by projected view
+            plot_data['px_sensor'] = proj_rect_pts[:, 0]
+            plot_data['py_sensor'] = proj_rect_pts[:, 1]
             distances = np.sqrt(np.sum(proj_rect_pts**2, axis=1))  # Distance from optical center
             max_radius = np.max(distances)
         else:
