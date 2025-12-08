@@ -1,30 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, Ellipse, Circle, Arc
-from scipy.signal import savgol_filter
-from matplotlib import gridspec
-
-try:
-    from scipy.signal import savgol_filter
-except ImportError:
-    savgol_filter = None
-
-def smooth_coverage(coverage, window=7, poly=2):
-    arr = np.array(coverage)
-    if len(arr) < window:
-        return arr
-    if savgol_filter is not None:
-        from math import floor
-        w = window if window % 2 == 1 else window + 1
-        w = min(w, len(arr) if len(arr) % 2 == 1 else len(arr) - 1)
-        if w < 3:
-            return arr
-        try:
-            return savgol_filter(arr, window_length=w, polyorder=min(poly, w-1))
-        except Exception:
-            return arr
-    return arr
-
 
 # Allowed aspect ratios (width:height)
 ALLOWED_ASPECT_RATIOS = {
@@ -34,24 +10,85 @@ ALLOWED_ASPECT_RATIOS = {
     "3:4": 3/4
 }
 
-def smooth_coverage_curve(coverages, window=5, poly=2):
-    coverages = np.array(coverages)
-    N = len(coverages)
-    window = min(window if window % 2 == 1 else window+1, N if N%2==1 else N-1)
-    if N < 3: return coverages
-    return savgol_filter(coverages, window, poly)
+def compute_max_projected_pixel_size(sensor_half_width, sensor_half_height, pixels_x, pixels_y, cam_pos, x_cam, y_cam, z_cam, H):
+    """
+    Compute the largest projected pixel size (corner-to-corner) on the water surface.
+    """
+    hw, hh = sensor_half_width, sensor_half_height
+    x_edges = np.linspace(-hw, hw, pixels_x + 1)
+    y_edges = np.linspace(-hh, hh, pixels_y + 1)
+    def project_to_world(xi, yi):
+        # Ray from camera through sensor at (xi, yi)
+        ray_dir = (xi * x_cam + yi * y_cam + H * z_cam)
+        norm_dir = np.linalg.norm(ray_dir)
+        if norm_dir < 1e-8:
+            return np.array([np.nan, np.nan])
+        ray_dir = ray_dir / norm_dir
+        # Water plane: z = 0
+        if ray_dir[2] == 0:
+            return np.array([np.nan, np.nan])
+        t = -cam_pos[2] / ray_dir[2]
+        point = cam_pos + t * ray_dir
+        return point[:2]  # X, Y on water plane
+    max_size = 0
 
-def find_optimal_angle_and_range(angles, coverage, thresh=1.0):
-    smoothed = smooth_coverage_curve(coverage)
-    maxcov = np.max(smoothed)
-    near_max = np.where(smoothed >= maxcov - thresh)[0]
-    if len(near_max) == 0:
-        return float(angles[np.argmax(smoothed)]), float(angles[np.argmax(smoothed)]), float(maxcov)
-    return float(angles[near_max[0]]), float(angles[near_max[-1]]), float(maxcov)
+    corner_ij = [
+        (0, 0),
+        (pixels_x-1, 0),
+        (pixels_x-1, pixels_y-1),
+        (0, pixels_y-1)
+    ]
+    max_size = 0
+    for i, j in corner_ij:
+        corners = [
+            (x_edges[i], y_edges[j]),
+            (x_edges[i+1], y_edges[j]),
+            (x_edges[i+1], y_edges[j+1]),
+            (x_edges[i], y_edges[j+1])
+        ]
+        scene_pts = np.array([project_to_world(x, y) for (x, y) in corners])
+        lengths = [np.linalg.norm(scene_pts[k] - scene_pts[(k+1)%4]) for k in range(4)]
+        max_pix_len = max(lengths)
+        if max_pix_len > max_size:
+            max_size = max_pix_len
+    print(f"Largest projected IFOV (corners only): {max_size:.6f} mm")
+    return max_size
+    
 
-def calculate_water_coverage_curve(params, angle_range=(0, 60), angle_step=1.0):
+def smooth_curve(y, window_size=3):
+    """Moving average smoothing, window_size must be odd"""
+    if window_size < 2 or window_size > len(y):
+        return y
+    pad = window_size // 2
+    padded = np.pad(y, (pad, pad), mode='reflect')
+    smooth = np.convolve(padded, np.ones(window_size)/window_size, mode='valid')
+    # 'valid' convolution shortens by window_size-1, so output is len(y)
+    # If your version differs, just use slicing: 
+    if len(smooth) > len(y):
+        extra = len(smooth)-len(y)
+        start = extra//2
+        smooth = smooth[start:start+len(y)]
+    return smooth
+
+def find_optimal_angle_for_coverage(params, angle_range=(0, 45), angle_step=1, smoothing_window=1):
+    """
+    Find the tilt angle that maximizes water coverage percentage,
+    optionally smoothing the curve before finding the max.
+    """
+    # Get the angle array and coverage array over the angle range
+    angles, coverages = calculate_water_coverage_curve(
+        params, angle_range=angle_range, angle_step=angle_step
+    )
+    # Apply smoothing if needed
+    if smoothing_window > 1 and len(angles) >= smoothing_window:
+        coverages = smooth_curve(coverages, window_size=smoothing_window)
+    # Find index of max smoothed coverage
+    max_idx = int(np.argmax(coverages))
+    return float(angles[max_idx]), float(coverages[max_idx])
+
+def calculate_water_coverage_curve(params, angle_range=(0, 45), angle_step=1, smoothing_window=1):
     """Calculate water coverage for a range of angles to create a plot"""
-    angles = np.arange(angle_range[0], angle_range[1]+angle_step, angle_step)
+    angles = []
     coverages = []
     
     for angle in np.arange(angle_range[0], angle_range[1] + angle_step, angle_step):
@@ -65,7 +102,16 @@ def calculate_water_coverage_curve(params, angle_range=(0, 60), angle_step=1.0):
         except Exception:
             continue
     
-    return np.array(angles), np.array(coverages)
+    angles_np = np.array(angles)
+    coverages_np = np.array(coverages)
+    # Apply smoothing if requested
+    if smoothing_window > 1 and len(coverages_np) >= smoothing_window:
+        smoothed = smooth_curve(coverages_np, window_size=smoothing_window)
+        # Center the angles array to match the smoothed coverage size
+        offset = (len(angles_np) - len(smoothed)) // 2
+        angles_np = angles_np[offset : offset + len(smoothed)]
+        coverages_np = smoothed
+    return angles_np, coverages_np
 
 def calculate_water_coverage_for_angle(params):
     """Calculate water coverage percentage for a given tilt angle with realistic sensor"""
@@ -268,7 +314,9 @@ def calculate_projection(params, x_range_mm=(-350, 350), y_range_mm=(-350, 350),
     z_cam = z_cam / np.linalg.norm(z_cam)
 
     # Calculate OPTIMAL TILT ANGLE based on maximum water coverage
-    optimal_angle, optimal_coverage = find_optimal_angle_for_coverage(params)
+    smoothness = params.get('Smoothness', 2)
+    smoothing_window = params.get('SmoothingWindow', 1)
+    optimal_angle, optimal_coverage = find_optimal_angle_for_coverage(params, angle_step=smoothness, smoothing_window=smoothing_window)
 
     # Calculate water coverage curve for plotting
     coverage_angles, coverage_values = calculate_water_coverage_curve(params)
@@ -359,9 +407,12 @@ def calculate_projection(params, x_range_mm=(-350, 350), y_range_mm=(-350, 350),
     pixels_x_sensor = round(sensor_width_mm / resolution)
     pixels_y_sensor = round(sensor_height_mm / resolution)
 
+    px = int(np.ceil(sensor_width_mm / resolution))
+    py = int(np.ceil(sensor_height_mm / resolution))
+
     # Calculate water coverage efficiency with realistic sensor
     def calculate_water_coverage_efficiency():
-        coverage_grid_size = 100
+        coverage_grid_size = 50
         sensor_x = np.linspace(-sensor_half_width, sensor_half_width, coverage_grid_size)
         sensor_y = np.linspace(-sensor_half_height, sensor_half_height, coverage_grid_size)
         sensor_xx, sensor_yy = np.meshgrid(sensor_x, sensor_y)
@@ -590,7 +641,7 @@ def calculate_projection(params, x_range_mm=(-350, 350), y_range_mm=(-350, 350),
 
     # Join all lines into single text with newlines
     overlay_text = "\n".join(overlay_lines)
-
+    
     # Create the text box with tight padding
     ax_proj.text(
         0.02, 0.98, overlay_text,
@@ -692,28 +743,43 @@ def calculate_projection(params, x_range_mm=(-350, 350), y_range_mm=(-350, 350),
         'coverage_values': coverage_values
     }
 
-def get_plot_data(params, x_range_mm=(-350, 350), y_range_mm=(-350, 350), n_ticks=9):
-    """Return plotting data instead of a figure - prevents flickering"""
-    A = params['A']
-    B = params['B']
-    C = params['C']
+def get_plot_data(params, smoothness=2):
+    """
+    Generate plot data for projection calculations.
+    """
+    margin_percent = params.get('Margin', 10)
+    margin_factor = 1.0 + (margin_percent / 100.0)
+    # Ensure Naive FOV calculations are included
+    A = params['A']  # Camera height
+    B = params['B'] * margin_factor  # Water spot length with margin
+    C = params['C'] * margin_factor  # Water spot width with margin
     theta_deg = params['Tilt']
-    margin_percent = params['Margin']
-    try:
-        margin_percent = float(margin_percent)
-    except Exception:
-        margin_percent = 0.0
+    tilt_rad = np.radians(theta_deg)
+
+    # For naive calculations, IGNORE tilt completely - just straight down view
+    # FOV calculations:
+    # - FOV_H_naive uses spot width (C) for width
+    # - FOV_V_naive uses spot length (B) for height
+    FOV_H_naive = np.rad2deg(2 * np.arctan(0.5 * C / A))  # Horizontal FOV (using spot width)
+    FOV_V_naive = np.rad2deg(2 * np.arctan(0.5 * B / A))  # Vertical FOV (using spot length)
+
+    # Resolution calculations:
+    # - naive_fov_h uses spot length (B) divided by resolution
+    # - naive_fov_v uses spot width (C) divided by resolution
+    naive_fov_h = int(C / params.get('Resolution', 1))  # Width (horizontal) pixels
+    naive_fov_v = int(B / params.get('Resolution', 1))  # Height (vertical) pixels
     shift = params['Shift']
     shift_axis = params['ShiftAxis']
     resolution = params['Resolution']
     
+    # Derived parameters
     margin_factor = 1.0 + (margin_percent / 100.0)
     H = A
     L = B * margin_factor
     W = C * margin_factor
     theta = np.deg2rad(theta_deg)
 
-    # Camera position based on shift axis
+    # Camera position
     if shift_axis == 'X':
         Xc = W / 2 + shift
         Yc = 0
@@ -721,6 +787,8 @@ def get_plot_data(params, x_range_mm=(-350, 350), y_range_mm=(-350, 350), n_tick
         Xc = 0
         Yc = L / 2 + shift
     cam_pos = np.array([Xc, Yc, H])
+
+    # Camera optical axis
     initial_optical_axis = np.array([0, 0, -1])
     if shift_axis == 'X':
         Ry = np.array([
@@ -738,148 +806,17 @@ def get_plot_data(params, x_range_mm=(-350, 350), y_range_mm=(-350, 350), n_tick
         ])
         z_cam = Rx @ initial_optical_axis
     z_cam = z_cam / np.linalg.norm(z_cam)
-    # Camera basis vectors
-    if abs(np.dot(z_cam, [0, 1, 0])) > 0.99:
-        up_guess = np.array([1, 0, 0])
-    else:
-        up_guess = np.array([0, 1, 0])
-    x_cam = np.cross(up_guess, z_cam)
-    x_cam = x_cam / np.linalg.norm(x_cam)
-    y_cam = np.cross(z_cam, x_cam)
-    y_cam = y_cam / np.linalg.norm(y_cam)
-    # Define project_point before any use
-    def project_point(p_world):
-        v = p_world - cam_pos
-        Xc_ = np.dot(v, x_cam)
-        Yc_ = np.dot(v, y_cam)
-        Zc_ = np.dot(v, z_cam)
-        if abs(Zc_) < 1e-10:
-            return np.array([0, 0])
-        x_img = H * Xc_ / Zc_
-        y_img = H * Yc_ / Zc_
-        return np.array([x_img, y_img])
 
-    # Calculate all the plotting elements
-    rect_res = 100
-    x_rect = np.linspace(-W/2, W/2, rect_res)
-    y_rect = np.linspace(-L/2, L/2, rect_res)
-    xx_rect, yy_rect = np.meshgrid(x_rect, y_rect)
-    rect_points = np.column_stack([xx_rect.ravel(), yy_rect.ravel(), np.zeros(rect_res**2)])
-    proj_rect_pts = np.array([project_point(p) for p in rect_points])
-
-    # Ellipse outline
-    ell_res = 200
-    angles = np.linspace(0, 2*np.pi, ell_res)
-    ell_x = (C/2) * np.cos(angles)
-    ell_y = (L/2) * np.sin(angles)
-    ellipse_points = np.column_stack([ell_x, ell_y, np.zeros(ell_res)])
-    proj_ellipse_pts = np.array([project_point(p) for p in ellipse_points])
-
-    # Rectangle corners
-    rect_corners = np.array([
-        [-W/2, -L/2, 0], [ W/2, -L/2, 0], [ W/2,  L/2, 0], [-W/2,  L/2, 0], [-W/2, -L/2, 0]
-    ])
-    proj_rect_outline = np.array([project_point(p) for p in rect_corners])
-
-    # Water spot bounds for reference
-    ellipse_min_x, ellipse_max_x = np.min(proj_ellipse_pts[:, 0]), np.max(proj_ellipse_pts[:, 0])
-    ellipse_min_y, ellipse_max_y = np.min(proj_ellipse_pts[:, 1]), np.max(proj_ellipse_pts[:, 1])
-    ellipse_cx = (ellipse_min_x + ellipse_max_x) / 2
-    ellipse_cy = (ellipse_min_y + ellipse_max_y) / 2
-    ellipse_half_width = (ellipse_max_x - ellipse_min_x) / 2
-    ellipse_half_height = (ellipse_max_y - ellipse_min_y) / 2
-
-    # Calculate required FOV with margin
-    water_extent_from_optical_axis_x = max(abs(ellipse_min_x), abs(ellipse_max_x))
-    water_extent_from_optical_axis_y = max(abs(ellipse_min_y), abs(ellipse_max_y))
+    # Optimal calculations
+    optimal_angle, optimal_coverage = find_optimal_angle_for_coverage(params, smoothing_window=1)
+    coverage_angles, coverage_values = calculate_water_coverage_curve(params, smoothing_window=1)
     
-    required_half_width = water_extent_from_optical_axis_x * (1 + margin_percent / 100)
-    required_half_height = water_extent_from_optical_axis_y * (1 + margin_percent / 100)
-
-    # REALISTIC SENSOR: Find smallest standard aspect ratio sensor that fits required FOV
-    sensor_half_width, sensor_half_height, aspect_ratio_used = find_realistic_sensor_size(
-        required_half_width, required_half_height)
-
-    # FOV box coordinates - symmetrical around optical axis (0,0)
-    box_x_mm = np.array([-sensor_half_width, sensor_half_width, sensor_half_width, 
-                         -sensor_half_width, -sensor_half_width])
-    box_y_mm = np.array([-sensor_half_height, -sensor_half_height, sensor_half_height, 
-                         sensor_half_height, -sensor_half_height])
-
-    # Calculate more data needed for plotting
-    sensor_width_mm = 2 * sensor_half_width
-    sensor_height_mm = 2 * sensor_half_height
-    pixels_x_sensor = round(sensor_width_mm / resolution)
-    pixels_y_sensor = round(sensor_height_mm / resolution)
-
-    # --- Camera setup logic ---
-    camera_setup = params.get('CameraSetup', '1x1')
-    try:
-        n_images = int(camera_setup.split('x')[0]) * int(camera_setup.split('x')[1])
-    except Exception:
-        n_images = 1
-    pixel_pitch_um = params.get('PixelPitch', 2.0)
-    dead_zone_mm = params.get('DeadZone', 0.0)
-    resolution_mm_per_px = params.get('Resolution', 0.22)
-    pixel_pitch_mm = pixel_pitch_um / 1000.0
-    pixel_size_with_dead_zone_mm = pixel_pitch_mm + dead_zone_mm
-
-    # Naive calculation
-    ellipse_width_with_margin = ellipse_half_width * 2 * (1 + margin_percent / 100)
-    ellipse_height_with_margin = ellipse_half_height * 2 * (1 + margin_percent / 100)
-    pixels_x_naive = round(ellipse_width_with_margin / resolution_mm_per_px)
-    pixels_y_naive = round(ellipse_height_with_margin / resolution_mm_per_px)
-    dead_zone_pixels_x = round(ellipse_width_with_margin / pixel_size_with_dead_zone_mm) - pixels_x_naive
-    dead_zone_pixels_y = round(ellipse_height_with_margin / pixel_size_with_dead_zone_mm) - pixels_y_naive
-    pixels_x_naive_total = (pixels_x_naive + max(dead_zone_pixels_x, 0)) * n_images
-    pixels_y_naive_total = (pixels_y_naive + max(dead_zone_pixels_y, 0)) * n_images
-
-    # Realistic sensor calculation
-    dead_zone_pixels_x_sensor = round(sensor_width_mm / pixel_size_with_dead_zone_mm) - pixels_x_sensor
-    dead_zone_pixels_y_sensor = round(sensor_height_mm / pixel_size_with_dead_zone_mm) - pixels_y_sensor
-    pixels_x_sensor_total = (pixels_x_sensor + max(dead_zone_pixels_x_sensor, 0)) * n_images
-    pixels_y_sensor_total = (pixels_y_sensor + max(dead_zone_pixels_y_sensor, 0)) * n_images
-
-    # Calculate water coverage efficiency
-    def calculate_water_coverage_efficiency():
-        coverage_grid_size = 100
-        sensor_x = np.linspace(-sensor_half_width, sensor_half_width, coverage_grid_size)
-        sensor_y = np.linspace(-sensor_half_height, sensor_half_height, coverage_grid_size)
-        sensor_xx, sensor_yy = np.meshgrid(sensor_x, sensor_y)
-    if shift_axis == 'X':
-        Xc = W / 2 + shift
-        Yc = 0
-    else:
-        Xc = 0
-        Yc = L / 2 + shift
-    cam_pos = np.array([Xc, Yc, H])
-    initial_optical_axis = np.array([0, 0, -1])
-    if shift_axis == 'X':
-        Ry = np.array([
-            [np.cos(theta), 0, np.sin(theta)],
-            [0, 1, 0],
-            [-np.sin(theta), 0, np.cos(theta)]
-        ])
-        z_cam = Ry @ initial_optical_axis
-    else:
-        theta_corrected = -theta
-        Rx = np.array([
-            [1, 0, 0],
-            [0, np.cos(theta_corrected), -np.sin(theta_corrected)],
-            [0, np.sin(theta_corrected), np.cos(theta_corrected)]
-        ])
-        z_cam = Rx @ initial_optical_axis
-    z_cam = z_cam / np.linalg.norm(z_cam)
-    # Calculate OPTIMAL TILT ANGLE based on maximum water coverage
-    optimal_angle, optimal_coverage = find_optimal_angle_for_coverage(params)
-    # Calculate water coverage curve for plotting
-    coverage_angles, coverage_values = calculate_water_coverage_curve(params)
-    # Apply correct sign convention to optimal angle
     if shift_axis == 'X':
         optimal_angle_corrected = -optimal_angle if Xc > 0 else optimal_angle
     else:
         optimal_angle_corrected = -optimal_angle if Yc > 0 else optimal_angle
-    # Camera basis vectors
+
+    # Camera basis
     if abs(np.dot(z_cam, [0, 1, 0])) > 0.99:
         up_guess = np.array([1, 0, 0])
     else:
@@ -888,7 +825,8 @@ def get_plot_data(params, x_range_mm=(-350, 350), y_range_mm=(-350, 350), n_tick
     x_cam = x_cam / np.linalg.norm(x_cam)
     y_cam = np.cross(z_cam, x_cam)
     y_cam = y_cam / np.linalg.norm(y_cam)
-    # Define project_point before any use
+
+    # Project function
     def project_point(p_world):
         v = p_world - cam_pos
         Xc_ = np.dot(v, x_cam)
@@ -900,217 +838,139 @@ def get_plot_data(params, x_range_mm=(-350, 350), y_range_mm=(-350, 350), n_tick
         y_img = H * Yc_ / Zc_
         return np.array([x_img, y_img])
 
-    # Calculate all the plotting elements
-    rect_res = 100
-    x_rect = np.linspace(-W/2, W/2, rect_res)
-    y_rect = np.linspace(-L/2, L/2, rect_res)
-    xx_rect, yy_rect = np.meshgrid(x_rect, y_rect)
-    rect_points = np.column_stack([xx_rect.ravel(), yy_rect.ravel(), np.zeros(rect_res**2)])
-    # project_point must be defined before this line
-    proj_rect_pts = np.array([project_point(p) for p in rect_points])
-    # Ellipse outline
+    # Generate ellipse points
     ell_res = 200
     angles = np.linspace(0, 2*np.pi, ell_res)
     ell_x = (C/2) * np.cos(angles)
     ell_y = (L/2) * np.sin(angles)
     ellipse_points = np.column_stack([ell_x, ell_y, np.zeros(ell_res)])
     proj_ellipse_pts = np.array([project_point(p) for p in ellipse_points])
-    # Rectangle corners
-    rect_corners = np.array([
-        [-W/2, -L/2, 0], [ W/2, -L/2, 0], [ W/2,  L/2, 0], [-W/2,  L/2, 0], [-W/2, -L/2, 0]
-    ])
-    proj_rect_outline = np.array([project_point(p) for p in rect_corners])
-    # Water spot bounds for reference
+
+    # Water bounds
     ellipse_min_x, ellipse_max_x = np.min(proj_ellipse_pts[:, 0]), np.max(proj_ellipse_pts[:, 0])
     ellipse_min_y, ellipse_max_y = np.min(proj_ellipse_pts[:, 1]), np.max(proj_ellipse_pts[:, 1])
     ellipse_cx = (ellipse_min_x + ellipse_max_x) / 2
     ellipse_cy = (ellipse_min_y + ellipse_max_y) / 2
     ellipse_half_width = (ellipse_max_x - ellipse_min_x) / 2
     ellipse_half_height = (ellipse_max_y - ellipse_min_y) / 2
-    # Calculate required FOV with margin
-    water_extent_from_optical_axis_x = max(abs(ellipse_min_x), abs(ellipse_max_x))
-    water_extent_from_optical_axis_y = max(abs(ellipse_min_y), abs(ellipse_max_y))
-    required_half_width = water_extent_from_optical_axis_x * (1 + margin_percent / 100)
-    required_half_height = water_extent_from_optical_axis_y * (1 + margin_percent / 100)
-    # REALISTIC SENSOR: Find smallest standard aspect ratio sensor that fits required FOV
+
+    # Required FOV
+    water_extent_x = max(abs(ellipse_min_x), abs(ellipse_max_x))
+    water_extent_y = max(abs(ellipse_min_y), abs(ellipse_max_y))
+    required_half_width = water_extent_x * (1 + margin_percent / 100)
+    required_half_height = water_extent_y * (1 + margin_percent / 100)
+
+    # Sensor size
     sensor_half_width, sensor_half_height, aspect_ratio_used = find_realistic_sensor_size(
         required_half_width, required_half_height)
-    # FOV box coordinates - symmetrical around optical axis (0,0)
-    box_x_mm = np.array([-sensor_half_width, sensor_half_width, sensor_half_width, 
-                         -sensor_half_width, -sensor_half_width])
-    box_y_mm = np.array([-sensor_half_height, -sensor_half_height, sensor_half_height, 
-                         sensor_half_height, -sensor_half_height])
-    # Calculate more data needed for plotting
-    sensor_width_mm = 2 * sensor_half_width
-    sensor_height_mm = 2 * sensor_half_height
-    pixels_x_sensor = round(sensor_width_mm / resolution)
-    pixels_y_sensor = round(sensor_height_mm / resolution)
-    # --- Camera setup logic ---
-    camera_setup = params.get('CameraSetup', '1x1')
-    try:
-        n_images = int(camera_setup.split('x')[0]) * int(camera_setup.split('x')[1])
-    except Exception:
-        n_images = 1
-    pixel_pitch_um = params.get('PixelPitch', 2.0)
-    dead_zone_mm = params.get('DeadZone', 0.0)
-    resolution_mm_per_px = params.get('Resolution', 0.22)
-    pixel_pitch_mm = pixel_pitch_um / 1000.0
-    pixel_size_with_dead_zone_mm = pixel_pitch_mm + dead_zone_mm
-    # Naive calculation
-    ellipse_width_with_margin = ellipse_half_width * 2 * (1 + margin_percent / 100)
-    ellipse_height_with_margin = ellipse_half_height * 2 * (1 + margin_percent / 100)
-    pixels_x_naive = round(ellipse_width_with_margin / resolution_mm_per_px)
-    pixels_y_naive = round(ellipse_height_with_margin / resolution_mm_per_px)
-    dead_zone_pixels_x = round(ellipse_width_with_margin / pixel_size_with_dead_zone_mm) - pixels_x_naive
-    dead_zone_pixels_y = round(ellipse_height_with_margin / pixel_size_with_dead_zone_mm) - pixels_y_naive
-    pixels_x_naive_total = (pixels_x_naive + max(dead_zone_pixels_x, 0)) * n_images
-    pixels_y_naive_total = (pixels_y_naive + max(dead_zone_pixels_y, 0)) * n_images
-    # Realistic sensor calculation
-    dead_zone_pixels_x_sensor = round(sensor_width_mm / pixel_size_with_dead_zone_mm) - pixels_x_sensor
-    dead_zone_pixels_y_sensor = round(sensor_height_mm / pixel_size_with_dead_zone_mm) - pixels_y_sensor
-    pixels_x_sensor_total = (pixels_x_sensor + max(dead_zone_pixels_x_sensor, 0)) * n_images
-    pixels_y_sensor_total = (pixels_y_sensor + max(dead_zone_pixels_y_sensor, 0)) * n_images
-    # Calculate water coverage efficiency
-    def calculate_water_coverage_efficiency():
-        coverage_grid_size = 100
-        sensor_x = np.linspace(-sensor_half_width, sensor_half_width, coverage_grid_size)
-        sensor_y = np.linspace(-sensor_half_height, sensor_half_height, coverage_grid_size)
-        sensor_xx, sensor_yy = np.meshgrid(sensor_x, sensor_y)
-        water_pixels = 0
-        total_pixels = coverage_grid_size * coverage_grid_size
-        for i in range(coverage_grid_size):
-            for j in range(coverage_grid_size):
-                pixel_x = sensor_xx[i, j]
-                pixel_y = sensor_yy[i, j]
-                rel_x = pixel_x - ellipse_cx
-                rel_y = pixel_y - ellipse_cy
-                if (rel_x / ellipse_half_width)**2 + (rel_y / ellipse_half_height)**2 <= 1:
-                    water_pixels += 1
-        coverage_percentage = (water_pixels / total_pixels) * 100
-        return coverage_percentage, water_pixels, total_pixels
-    water_coverage_percent, water_pixels, total_sensor_pixels = calculate_water_coverage_efficiency()
-    # Optics calculations
-    all_x_coords = np.concatenate([box_x_mm, proj_ellipse_pts[:, 0]])
-    all_y_coords = np.concatenate([box_y_mm, proj_ellipse_pts[:, 1]])
-    dists = np.sqrt(all_x_coords**2 + all_y_coords**2)
-    optics_radius = np.max(dists)
-    optics_diameter = 2 * optics_radius
-    # FOV points for world view
+
+    # Rectangle geometry
+    rect_corners = np.array([
+        [-W/2, -L/2, 0], [W/2, -L/2, 0], [W/2, L/2, 0], [-W/2, L/2, 0], [-W/2, -L/2, 0]
+    ])
+    proj_rect_outline = np.array([project_point(p) for p in rect_corners])
+
+    rect_res = 100
+    x_rect = np.linspace(-W/2, W/2, rect_res)
+    y_rect = np.linspace(-L/2, L/2, rect_res)
+    xx_rect, yy_rect = np.meshgrid(x_rect, y_rect)
+    rect_points = np.column_stack([xx_rect.ravel(), yy_rect.ravel(), np.zeros(rect_res**2)])
+    proj_rect_pts = np.array([project_point(p) for p in rect_points])
+
+    # FOV points
     fov_points_world = [
         [-C/2, -L/2, 0], [C/2, -L/2, 0], [C/2, L/2, 0], [-C/2, L/2, 0],
         [0, -L/2, 0], [0, L/2, 0], [-C/2, 0, 0], [C/2, 0, 0]
     ]
-    # Side view calculations
+
+    # FOV box
+    box_x_mm = np.array([-sensor_half_width, sensor_half_width, sensor_half_width, 
+                         -sensor_half_width, -sensor_half_width])
+    box_y_mm = np.array([-sensor_half_height, -sensor_half_height, sensor_half_height, 
+                         sensor_half_height, -sensor_half_height])
+
+    # Calculations
+    target_ifov = float(params.get('Resolution', 0.22))
+    sensor_width_mm = 2 * sensor_half_width
+    sensor_height_mm = 2 * sensor_half_height
+    pixels_x_sensor = int(np.ceil(sensor_width_mm / resolution))
+    pixels_y_sensor = int(np.ceil(sensor_height_mm / resolution))
+
+    pixels_x_naive = int(np.ceil(ellipse_half_width * 2 * (1 + margin_percent / 100) / resolution))
+    pixels_y_naive = int(np.ceil(ellipse_half_height * 2 * (1 + margin_percent / 100) / resolution))
+
+    FOV_H_sensor = np.rad2deg(2 * np.arctan(sensor_half_width / H))
+    FOV_V_sensor = np.rad2deg(2 * np.arctan(sensor_half_height / H))
+
+    optics_radius = max(sensor_half_width, sensor_half_height)
+    optics_diameter = 2 * optics_radius
+
+    water_coverage_percent = calculate_water_coverage_for_angle(params)
+
+    # Side view data
     if shift_axis == 'X':
-        side_cam_x = Xc
-        side_cam_z = H
+        camera_center_x = Xc
         optical_axis_2d = np.array([z_cam[0], z_cam[2]])
     else:
-        side_cam_x = Yc
-        side_cam_z = H
+        camera_center_x = Yc
         optical_axis_2d = np.array([z_cam[1], z_cam[2]])
-    camera_center_x = side_cam_x
-    camera_center_z = side_cam_z
-    sensor_normal_2d = optical_axis_2d / np.linalg.norm(optical_axis_2d)
-    sensor_tangent_2d = np.array([-sensor_normal_2d[1], sensor_normal_2d[0]])
+
+    camera_center_z = H
+    sensor_tangent_2d = np.array([-optical_axis_2d[1], optical_axis_2d[0]])
     optical_axis_normalized = optical_axis_2d / np.linalg.norm(optical_axis_2d)
     optimal_axis_2d = np.array([np.sin(np.radians(optimal_angle_corrected)), -np.cos(np.radians(optimal_angle_corrected))])
-    # Return all data needed for plotting
+
+    # IFOV calculations
+    ifov_x = sensor_width_mm / pixels_x_sensor if pixels_x_sensor > 0 else target_ifov
+    ifov_y = sensor_height_mm / pixels_y_sensor if pixels_y_sensor > 0 else target_ifov
+    max_ifov = max(ifov_x, ifov_y)
+    min_ifov = min(ifov_x, ifov_y)
+
+    # Return all data
     return {
-        # Basic parameters
         'A': A, 'B': B, 'C': C, 'H': H, 'L': L, 'W': W,
         'theta_deg': theta_deg, 'shift_axis': shift_axis,
         'Xc': Xc, 'Yc': Yc,
-        # Plotting arrays
-        'rect_corners': rect_corners,
+        'rect_corners': rect_corners[:4],  # Remove duplicate point
         'proj_rect_pts': proj_rect_pts,
         'proj_ellipse_pts': proj_ellipse_pts,
         'proj_rect_outline': proj_rect_outline,
         'box_x_mm': box_x_mm,
         'box_y_mm': box_y_mm,
         'fov_points_world': fov_points_world,
-        # Ellipse data
         'ellipse_cx': ellipse_cx,
         'ellipse_cy': ellipse_cy,
         'ellipse_half_width': ellipse_half_width,
         'ellipse_half_height': ellipse_half_height,
-        # Sensor data
         'aspect_ratio_used': aspect_ratio_used,
-        'pixels_x_sensor': pixels_x_sensor_total,
-        'pixels_y_sensor': pixels_y_sensor_total,
-        'pixels_x_naive': pixels_x_naive_total,
-        'pixels_y_naive': pixels_y_naive_total,
+        'pixels_x_sensor': pixels_x_sensor,
+        'pixels_y_sensor': pixels_y_sensor,
+        'pixels_x_naive': pixels_x_naive,
+        'pixels_y_naive': pixels_y_naive,
+        'max_ifov': max_ifov,
+        'min_ifov': min_ifov,
         'water_coverage_percent': water_coverage_percent,
-        # --- PATCH: Add keys for UI compatibility ---
-        'naive_sensor_res_x': pixels_x_naive_total,
-        'naive_sensor_res_y': pixels_y_naive_total,
-        'realistic_sensor_res_x': pixels_x_sensor_total,
-        'realistic_sensor_res_y': pixels_y_sensor_total,
-        'realistic_ratio': aspect_ratio_used,
-        # Optimal angle data
         'optimal_angle': optimal_angle,
         'optimal_coverage': optimal_coverage,
         'coverage_angles': coverage_angles,
         'coverage_values': coverage_values,
-        # Optics data
         'optics_radius': optics_radius,
         'optics_diameter': optics_diameter,
         'projection_offset': np.sqrt(ellipse_cx**2 + ellipse_cy**2),
-        # Side view data
         'camera_center_x': camera_center_x,
         'camera_center_z': camera_center_z,
         'sensor_tangent_2d': sensor_tangent_2d,
         'optical_axis_normalized': optical_axis_normalized,
         'optimal_axis_2d': optimal_axis_2d,
+        'sensor_width_mm': sensor_width_mm,
+        'sensor_height_mm': sensor_height_mm,
+        'ifov_map': None,  # Set to None for now
+        'px_sensor': pixels_x_sensor,
+        'py_sensor': pixels_y_sensor,
+        'FOV_H_sensor': FOV_H_sensor,
+        'FOV_V_sensor': FOV_V_sensor,
+        'naive_fov_h': naive_fov_h,
+        'naive_fov_v': naive_fov_v,
+        'FOV_H_naive': FOV_H_naive,
+        'FOV_V_naive': FOV_V_naive,
     }
-    optimal_axis_2d = np.array([np.sin(np.radians(optimal_angle_corrected)), -np.cos(np.radians(optimal_angle_corrected))])
-
-    # Return all data needed for plotting
-    return {
-        # Basic parameters
-        'A': A, 'B': B, 'C': C, 'H': H, 'L': L, 'W': W,
-        'theta_deg': theta_deg, 'shift_axis': shift_axis,
-        'Xc': Xc, 'Yc': Yc,
-        
-        # Plotting arrays
-        'rect_corners': rect_corners,
-        'proj_rect_pts': proj_rect_pts,
-        'proj_ellipse_pts': proj_ellipse_pts,
-        'proj_rect_outline': proj_rect_outline,
-        'box_x_mm': box_x_mm,
-        'box_y_mm': box_y_mm,
-        'fov_points_world': fov_points_world,
-        
-        # Ellipse data
-        'ellipse_cx': ellipse_cx,
-        'ellipse_cy': ellipse_cy,
-        'ellipse_half_width': ellipse_half_width,
-        'ellipse_half_height': ellipse_half_height,
-        
-        # Sensor data
-        'aspect_ratio_used': aspect_ratio_used,
-        'pixels_x_sensor': pixels_x_sensor_total,
-        'pixels_y_sensor': pixels_y_sensor_total,
-        'pixels_x_naive': pixels_x_naive_total,
-        'pixels_y_naive': pixels_y_naive_total,
-        'water_coverage_percent': water_coverage_percent,
-        
-        # Optimal angle data
-        'optimal_angle': optimal_angle,
-        'optimal_coverage': optimal_coverage,
-        'coverage_angles': coverage_angles,
-        'coverage_values': coverage_values,
-        
-        # Optics data
-        'optics_radius': optics_radius,
-        'optics_diameter': optics_diameter,
-        'projection_offset': np.sqrt(ellipse_cx**2 + ellipse_cy**2),
-        
-        # Side view data
-        'camera_center_x': camera_center_x,
-        'camera_center_z': camera_center_z,
-        'sensor_tangent_2d': sensor_tangent_2d,
-        'optical_axis_normalized': optical_axis_normalized,
-        'optimal_axis_2d': optimal_axis_2d,
-    }
-

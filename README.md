@@ -36,6 +36,25 @@ Alternatively, launch the Tkinter GUI directly:
 python "c:\Users\ofirn\OneDrive\Documents\Work\ConsultingServices\Outsense\Python\NewSensorCalculation\SensorFOVCalc.py"
 ```
 
+### Parameters Overview
+- **A (Camera height)**: Rim-to-water depth [mm]
+- **B (Water spot length)**: Target length [mm]
+- **C (Water spot width)**: Target width [mm]
+- **Camera Tilt**: Degrees relative to vertical
+- **Margin**: Extra coverage percentage
+- **Shift**: Offset from water spot edge [mm]
+- **Required Resolution**: Target IFOV [mm/px]
+- **Dead zone**: Non-usable area [mm]
+- **Pixel pitch**: Sensor pixel size [μm]
+
+### VS Code Tasks
+Use the preconfigured tasks for one-click runs:
+- "Run GUI" launches `SensorFOVCalc.py`
+- "Run CLI" launches `NewSensorFOVCalc.py`
+
+### Screenshots
+Add screenshots of top-down, side, and projected views here for quick reference.
+
 ## Repository Layout
 - `SensorFOVCalc.py`: Tkinter GUI app (shows version/build in title)
 - `NewSensorFOVCalc.py`: CLI-style entry (prints debug, runs calcs)
