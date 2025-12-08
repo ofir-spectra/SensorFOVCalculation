@@ -17,16 +17,18 @@ from data_manager import ToiletDataManager
 from image_utils import find_image_case_insensitive
 
 # Build dynamic version from Git branch and commit count
-def _get_git_meta(default_version="V5.0.11"):
+def _get_git_meta(default_version="5.0.11"):
     try:
         repo_dir = os.path.dirname(os.path.abspath(__file__))
-        branch = subprocess.check_output([
-            "git", "rev-parse", "--abbrev-ref", "HEAD"
-        ], cwd=repo_dir, stderr=subprocess.DEVNULL).decode().strip()
-        commit_count = subprocess.check_output([
-            "git", "rev-list", "--count", "HEAD"
-        ], cwd=repo_dir, stderr=subprocess.DEVNULL).decode().strip()
-        version = f"{commit_count}"
+        branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir, stderr=subprocess.DEVNULL).decode().strip()
+        # Prefer latest tag as version, fallback to default
+        try:
+            version = subprocess.check_output(["git", "describe", "--tags", "--abbrev=0"], cwd=repo_dir, stderr=subprocess.DEVNULL).decode().strip()
+            # Normalize like 5.0.11 (strip leading 'v' if present)
+            if version.lower().startswith('v'):
+                version = version[1:]
+        except Exception:
+            version = default_version
         return version, branch
     except Exception:
         return default_version, "unknown"
