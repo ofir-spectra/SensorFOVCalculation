@@ -1,0 +1,14 @@
+Manufacturer,Model,Sub-Model,A - Rim to Water depth (camera height) [mm],B - Water Spot Length [mm],C - Water Spot Width [mm],Camera Tilt [degrees],Margin [%],Shift from Water Spot Width Edge [mm],Shift Axis,Required Resolution [mm/px],Pixel Pitch [um]
+Kohler,Cimmaron,K-31621 (elongated),168,264,206,45,10,0,X,0.22,1.2
+Kohler,Cimmaron,K-31644,168,218,198,45,10,0,X,0.22,1.2
+Kohler,Adair,K-3946 (-RA),154,279,197,45,10,0,X,0.22,1.2
+Kohler,Reach,K-78080 (-RA),162,232,216,45,10,0,X,0.22,1.2
+Kohler,Reach,K-23188-HC,148,197,146,45,10,0,X,0.22,1.2
+Kohler,Reach,K-23188,158,197,146,45,10,0,X,0.22,1.2
+DEFAULT,DEFAULT,DEFAULT,154,279,197,35,10,0,Y,0.22,
+DEFAULT,DEFAULT,DEFAULT,133,317.5,266.7,29,10,0,X,0.22,
+Kohler,Highline,K-3889,137,289,203,45,10,0,Y,0.22,2
+Kohler,Highline,K-3889,137,289,203,30,10,0,Y,0.22,2
+Kohler,DEFAULT,OUTSENSE,160,240,130,30,10,0,Y,0.22,2
+Kohler ,Tresham,K-3981,,,,,,,,,
+Kohler,Odeon,,,,,,,,,,
