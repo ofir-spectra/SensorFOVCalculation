@@ -17,17 +17,21 @@ from data_manager import ToiletDataManager
 from image_utils import find_image_case_insensitive
 
 # Build dynamic version from Git branch and commit count
-def _get_git_version(default="V5.0.11"):
+def _get_git_meta(default_version="V5.0.11"):
     try:
-        # Get branch name
-        branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=os.path.dirname(os.path.abspath(__file__)), stderr=subprocess.DEVNULL).decode().strip()
-        # Get commit count as build number
-        commit_count = subprocess.check_output(["git", "rev-list", "--count", "HEAD"], cwd=os.path.dirname(os.path.abspath(__file__)), stderr=subprocess.DEVNULL).decode().strip()
-        return f"{branch} #{commit_count}"
+        repo_dir = os.path.dirname(os.path.abspath(__file__))
+        branch = subprocess.check_output([
+            "git", "rev-parse", "--abbrev-ref", "HEAD"
+        ], cwd=repo_dir, stderr=subprocess.DEVNULL).decode().strip()
+        commit_count = subprocess.check_output([
+            "git", "rev-list", "--count", "HEAD"
+        ], cwd=repo_dir, stderr=subprocess.DEVNULL).decode().strip()
+        version = f"{commit_count}"
+        return version, branch
     except Exception:
-        return default
+        return default_version, "unknown"
 
-APP_VERSION = _get_git_version()
+APP_VERSION, APP_BRANCH = _get_git_meta()
 
 GRAPH_TITLE_FONTSIZE = 14
 GRAPH_LABEL_FONTSIZE = 14
@@ -66,14 +70,14 @@ def safe_float(val, default):
 class ProjectionApp:
     def __init__(self, root):
         self.root = root
-        self.root.title(f"SENSOR SIMULATION {APP_VERSION}")
+        self.root.title(f"SENSOR SIMULATION {APP_VERSION} ({APP_BRANCH})")
         self.root.geometry("1900x1000")
 
         # Create top frame for title and help button
         top_frame = tk.Frame(root)
         top_frame.grid(row=0, column=0, columnspan=2, pady=(10, 0), sticky="ew")
         
-        title_label = tk.Label(top_frame, text=f"SENSOR SIMULATION {APP_VERSION}", font=("Arial", 20, "bold"))
+        title_label = tk.Label(top_frame, text=f"SENSOR SIMULATION {APP_VERSION} ({APP_BRANCH})", font=("Arial", 20, "bold"))
         title_label.pack(side=tk.LEFT, padx=(10, 0))
         
         # Add help button
