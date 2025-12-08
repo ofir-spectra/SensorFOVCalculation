@@ -69,3 +69,6 @@ Support engineering decisions for a future camera sensor by simulating coverage,
 ## Notes
 - If the repository isn’t a git repo or tags are missing, the title falls back to `v5.0.11 build local (unknown)`.
 - Adjust defaults in `SensorFOVCalc.py` under `_get_git_meta()` if needed.
+
+## Documentation
+- User Manual: `CameraSim-UM.docx` (in the root folder). It provides background, parameter descriptions, and step-by-step usage. If you update the UI or parameters, please reflect changes in this document.
