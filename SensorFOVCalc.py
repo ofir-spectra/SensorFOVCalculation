@@ -129,6 +129,9 @@ class ProjectionApp:
         self.coverage_zoom = 1.0
         self.coverage_xlim = [0, 60]
         self.coverage_ylim = [5, 90]
+        
+        # Tilt adjustment step size
+        self.tilt_step_var = tk.DoubleVar(value=1.0)
 
         self.fig = None
         self.canvas = None
@@ -285,9 +288,13 @@ class ProjectionApp:
                           command=lambda p=param: self.adjust_param(p, 1)).grid(row=i, column=3)
             if param == "Tilt":
                 tk.Button(param_frame, text="−", font=self.param_font, width=2,
-                          command=lambda p=param: self.adjust_param(p, -1)).grid(row=i, column=2)
+                          command=lambda p=param: self.adjust_param(p, -self.tilt_step_var.get())).grid(row=i, column=2)
                 tk.Button(param_frame, text="+", font=self.param_font, width=2,
-                          command=lambda p=param: self.adjust_param(p, 1)).grid(row=i, column=3)
+                          command=lambda p=param: self.adjust_param(p, self.tilt_step_var.get())).grid(row=i, column=3)
+                # Add step size input
+                tk.Label(param_frame, text="Step:", font=self.param_font).grid(row=i, column=4, sticky="e", padx=(10,2))
+                step_entry = tk.Entry(param_frame, textvariable=self.tilt_step_var, font=self.param_font, width=5)
+                step_entry.grid(row=i, column=5, padx=2, pady=5)
             elif param == "Margin":
                 tk.Button(param_frame, text="−", font=self.param_font, width=2,
                           command=lambda p=param: self.adjust_param(p, -1)).grid(row=i, column=2)
@@ -434,7 +441,7 @@ class ProjectionApp:
                 "A - Rim to Water depth (camera height) [mm]:": (None, 1.0),
                 "B - Water Spot Length [mm]:": (None, 1.0),
                 "C - Water Spot Width [mm]:": (None, 1.0),
-                "Camera Tilt [degrees]:": ("Tilt", 1.0),
+                "Camera Tilt [degrees]:": ("Tilt", None),  # Use tilt_step_var
                 "Margin [%]:": ("Margin", 1.0),
                 "Shift from Water Spot Width Edge [mm]:": ("Shift", 5.0),
                 "Dead zone [mm]:": ("DeadZone", 0.1),
@@ -443,25 +450,37 @@ class ProjectionApp:
             key_pair = lbl_key_map.get(label)
             if key_pair:
                 key_name, step = key_pair
-                # Use a local adjust that targets fov_entries
-                def adjust_fov(label_key=label, delta=step):
-                    try:
-                        val = safe_float(self.fov_entries[label_key].get(), 0.0)
-                        val += delta
-                        # clamp deadzone >= 0
-                        if label_key == "Dead zone [mm]:":
-                            val = max(0.0, val)
-                        self.fov_entries[label_key].delete(0, tk.END)
-                        # two decimals for micrometer/mm fields, one for angles
-                        fmt = "{:.2f}" if label_key in ("Dead zone [mm]:", "Pixel pitch [um]:") else "{:.1f}"
-                        self.fov_entries[label_key].insert(0, fmt.format(val))
-                        self.plot_projection()
-                    except Exception:
-                        pass
-                tk.Button(frame, text="−", font=self.param_font, width=2,
-                          command=lambda l=label, s=step: adjust_fov(l, -s)).grid(row=i, column=2)
-                tk.Button(frame, text="+", font=self.param_font, width=2,
-                          command=lambda l=label, s=step: adjust_fov(l, s)).grid(row=i, column=3)
+                # For Tilt, use the adjustable step variable
+                if label == "Camera Tilt [degrees]:":
+                    # Use lambdas with default argument capture
+                    tk.Button(frame, text="−", font=self.param_font, width=2,
+                              command=lambda lbl=label: self.adjust_fov_tilt(lbl, -1)).grid(row=i, column=2)
+                    tk.Button(frame, text="+", font=self.param_font, width=2,
+                              command=lambda lbl=label: self.adjust_fov_tilt(lbl, 1)).grid(row=i, column=3)
+                    # Add step size input for Tilt
+                    tk.Label(frame, text="Step:", font=self.param_font).grid(row=i, column=4, sticky="e", padx=(10,2))
+                    step_entry = tk.Entry(frame, textvariable=self.tilt_step_var, font=self.param_font, width=5)
+                    step_entry.grid(row=i, column=5, padx=2, pady=5)
+                else:
+                    # Use a local adjust that targets fov_entries
+                    def adjust_fov(label_key=label, delta=step):
+                        try:
+                            val = safe_float(self.fov_entries[label_key].get(), 0.0)
+                            val += delta
+                            # clamp deadzone >= 0
+                            if label_key == "Dead zone [mm]:":
+                                val = max(0.0, val)
+                            self.fov_entries[label_key].delete(0, tk.END)
+                            # two decimals for micrometer/mm fields, one for angles
+                            fmt = "{:.2f}" if label_key in ("Dead zone [mm]:", "Pixel pitch [um]:") else "{:.1f}"
+                            self.fov_entries[label_key].insert(0, fmt.format(val))
+                            self.plot_projection()
+                        except Exception:
+                            pass
+                    tk.Button(frame, text="−", font=self.param_font, width=2,
+                              command=lambda l=label, s=step: adjust_fov(l, -s)).grid(row=i, column=2)
+                    tk.Button(frame, text="+", font=self.param_font, width=2,
+                              command=lambda l=label, s=step: adjust_fov(l, s)).grid(row=i, column=3)
         r = len(labels)
         # New inputs for FOV-based mode
         tk.Label(frame, text="Focal Length [mm]:", font=self.param_font).grid(row=r, column=0, sticky="e", padx=5, pady=5)
@@ -567,6 +586,17 @@ class ProjectionApp:
         entry.delete(0, tk.END)
         entry.insert(0, f"{value:.2f}" if key in {"DeadZone", "PixelPitch","Resolution"} else f"{value:.1f}")
         self.plot_projection()
+    
+    def adjust_fov_tilt(self, label_key, sign):
+        """Adjust tilt in FOV tab using the tilt_step_var"""
+        try:
+            val = safe_float(self.fov_entries[label_key].get(), 0.0)
+            val += sign * self.tilt_step_var.get()
+            self.fov_entries[label_key].delete(0, tk.END)
+            self.fov_entries[label_key].insert(0, f"{val:.1f}")
+            self.plot_projection()
+        except Exception:
+            pass
 
     def setup_plot_frame(self):
         self.plot_frame = ttk.Frame(self.root)
