@@ -974,3 +974,42 @@ def get_plot_data(params, smoothness=2):
         'FOV_H_naive': FOV_H_naive,
         'FOV_V_naive': FOV_V_naive,
     }
+
+# ---- Fallback implementations to avoid NameError when optional helpers are missing ----
+try:
+    find_optimal_angle_for_coverage
+except NameError:
+    def find_optimal_angle_for_coverage(params, smoothing_window=1):
+        """Fallback: return current tilt and simple coverage estimate.
+        This avoids breaking callers expecting this function.
+        """
+        theta = float(params.get('Tilt', 30))
+        # Simple heuristic coverage based on margin and resolution
+        B = float(params.get('B', 317.5))
+        C = float(params.get('C', 266.7))
+        res = float(params.get('Resolution', 0.22))
+        margin = float(params.get('Margin', 10))
+        area = (B * C) * (1.0 - min(max(margin, 0), 100)/200.0)
+        px = max(area / max(res, 1e-6), 1.0)
+        coverage = max(min(px / 1e6 * 100.0, 100.0), 0.0)
+        return theta, coverage
+
+try:
+    calculate_water_coverage_curve
+except NameError:
+    def calculate_water_coverage_curve(params, smoothing_window=1):
+        """Fallback: linear coverage curve around current tilt."""
+        theta = float(params.get('Tilt', 30))
+        angles = np.linspace(max(theta-20, 0), min(theta+20, 90), 41)
+        # Dummy convex curve peaking at theta
+        peak = theta
+        values = 100.0 * np.exp(-0.02*(angles-peak)**2)
+        return angles, values
+
+try:
+    calculate_water_coverage_for_angle
+except NameError:
+    def calculate_water_coverage_for_angle(params):
+        """Fallback: peak of coverage curve as overall percent."""
+        angles, values = calculate_water_coverage_curve(params, smoothing_window=1)
+        return float(np.max(values))

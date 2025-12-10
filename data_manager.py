@@ -34,8 +34,12 @@ class ToiletDataManager:
             'Margin [%]',
             'Shift from Water Spot Width Edge [mm]',
             'Shift Axis',
+            'Dead Zone [mm]',
             'Required Resolution [mm/px]',
-            'Pixel Pitch [um]'
+            'Pixel Pitch [um]',
+            'Focal Length [mm]',
+            'Sensor Resolution [px×px]',
+            'Image Circle [mm]'
         )
         self.data = self.load_data()
     
@@ -48,10 +52,18 @@ class ToiletDataManager:
                     if col not in data.columns:
                         if col == 'Shift Axis':
                             data[col] = 'X'
+                        elif col == 'Dead Zone [mm]':
+                            data[col] = 0.3
                         elif col == 'Required Resolution [mm/px]':
                             data[col] = 0.22
                         elif col == 'Pixel Pitch [um]':
                             data[col] = 1.2
+                        elif col == 'Focal Length [mm]':
+                            data[col] = ''
+                        elif col == 'Sensor Resolution [px×px]':
+                            data[col] = ''
+                        elif col == 'Image Circle [mm]':
+                            data[col] = ''
                         else:
                             data[col] = ''
                 

@@ -43,17 +43,43 @@ python "c:\Users\ofirn\OneDrive\Documents\Work\ConsultingServices\Outsense\Pytho
 - **Camera Tilt**: Degrees relative to vertical
 - **Margin**: Extra coverage percentage
 - **Shift**: Offset from water spot edge [mm]
-- **Required Resolution**: Target IFOV [mm/px]
-- **Dead zone**: Non-usable area [mm]
+- **Required Resolution**: Target IFOV [mm/px] (IFOV mode only)
+- **Dead zone**: Non-usable area between tiles [mm]
 - **Pixel pitch**: Sensor pixel size [μm]
+- **Focal Length**: Lens focal length [mm] (FOV mode only)
+- **Sensor Resolution**: Physical pixel dimensions [px×px] (FOV mode only)
+- **Image Circle**: Diameter of lens's usable image circle [mm]
+  - Limits the effective sensor area receiving light
+  - If smaller than sensor diagonal, outer pixels are vignetted
+  - For full sensor utilization: Image Circle ≥ sensor diagonal
 
 ### VS Code Tasks
 Use the preconfigured tasks for one-click runs:
 - "Run GUI" launches `SensorFOVCalc.py`
 - "Run CLI" launches `NewSensorFOVCalc.py`
+ - "Run PyQt6 GUI" launches `PyQt6Version/main.py` (experimental, slate theme)
+
+### PyQt6 Experimental GUI
+- Location: `PyQt6Version/main.py`
+- Theme: Slate grey UI inspired by the screenshots; plots use white backgrounds.
+- Panels: Title, Simulation Results, Parameters, Plots (4 subplots), Toilet Database.
+- Run:
+```powershell
+python "${workspaceFolder}/PyQt6Version/main.py"
+```
+If imports fail when running from the folder directly, ensure the project root is on `PYTHONPATH` or run via the VS Code task.
 
 ### Screenshots
-Add screenshots of top-down, side, and projected views here for quick reference.
+Screenshots live under `docs/`.
+
+- `docs/pyqt6-overview.png` — Slate UI overview (title, panels)
+- `docs/pyqt6-plots.png` — Four plots (World, Projection, Side, Coverage)
+- `docs/tkinter-overview.png` — Tkinter UI overview
+
+Quick capture:
+1. Run the GUI (`Run GUI` or `Run PyQt6 GUI`).
+2. Press `PrtScn` and paste into an image editor, or use `Snipping Tool`.
+3. Save images to `docs/` with the names above.
 
 ## Repository Layout
 - `SensorFOVCalc.py`: Tkinter GUI app (shows version/build in title)
@@ -63,8 +89,40 @@ Add screenshots of top-down, side, and projected views here for quick reference.
 - `image_utils.py`: Utility for resolving image paths
 - `toilet_data.csv`: Geometry and configuration data
 
+## Dual Operating Modes
+
+### IFOV Mode
+Design a sensor based on required resolution:
+- Specify target resolution (mm/pixel)
+- Calculate required sensor dimensions and pixel count
+- Account for perspective distortion and tilt effects
+
+### FOV Mode
+Analyze existing sensor/lens combinations:
+- Input actual sensor resolution and focal length
+- Calculate field of view and coverage
+- Evaluate Image Circle constraints on usable pixels
+
+## Understanding Output Metrics
+
+### Active Pixel Fraction (by Image Circle)
+- **What it measures**: Percentage of sensor area that receives light from the lens
+- **Limited by**: Lens optics (Image Circle diameter)
+- **Good value**: ~100% (lens fully illuminates sensor)
+- **Impact**: Hardware limitation - wasted pixels outside the circle
+- **Fix**: Choose a lens with Image Circle ≥ sensor diagonal
+
+### Water Coverage
+- **What it measures**: Percentage of water spot visible in camera FOV
+- **Limited by**: Camera geometry (position, tilt, height)
+- **Good value**: >80% (most of target visible)
+- **Impact**: Positioning issue - affects scene visibility
+- **Fix**: Adjust camera placement, tilt, or height
+
+**Key Difference**: Active Pixel Fraction is about lens-to-sensor optical match, while Water Coverage is about camera-to-scene geometric alignment. Both can independently limit performance.
+
 ## Aim of This Tool
-Support engineering decisions for a future camera sensor by simulating coverage, resolution, and geometry interactions. It offers quick parameter sweeps, visual feedback, and derived metrics (e.g., IFOV min/max), helping choose tilt, height, and aspect ratio under constraints.
+Support engineering decisions for camera sensor systems by simulating coverage, resolution, and geometry interactions. Provides quick parameter sweeps, visual feedback, and derived metrics (IFOV min/max, FOV angles, coverage percentages) to optimize tilt, height, aspect ratio, and lens selection under real-world constraints.
 
 ## Notes
 - If the repository isn’t a git repo or tags are missing, the title falls back to `v5.0.11 build local (unknown)`.

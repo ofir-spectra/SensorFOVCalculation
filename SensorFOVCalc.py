@@ -14,6 +14,8 @@ import sys
 
 from projection_calculations import get_plot_data
 from data_manager import ToiletDataManager
+import logging
+import colorsys
 from image_utils import find_image_case_insensitive
 
 # Build dynamic version from Git branch and commit count
@@ -97,9 +99,15 @@ class ProjectionApp:
         csv_path = os.path.join(script_dir, "toilet_data.csv")
 
         self.data_manager = ToiletDataManager(csv_path)
-        self.param_font = Font(family="Arial", size=14)
-        self.table_font = Font(family="Arial", size=14)
-        self.heading_font = Font(family="Arial", size=14, weight="bold")
+        self.param_font = Font(family="Arial", size=16)
+        self.table_font = Font(family="Arial", size=16)
+        self.heading_font = Font(family="Arial", size=16, weight="bold")
+        # Increase Notebook tab font size
+        try:
+            style = ttk.Style()
+            style.configure('TNotebook.Tab', font=('Arial', 16))
+        except Exception:
+            pass
         self.param_labels = [
             ("A - Rim to Water depth (camera height) [mm]:", "133"),
             ("B - Water Spot Length [mm]:", "317.5"),
@@ -126,27 +134,51 @@ class ProjectionApp:
         self.canvas = None
         self.axes = {}
         self.setup_results_frame()
-        self.setup_params_frame()
+        self.setup_params_tabs()
         self.setup_plot_frame()
         self.setup_table_frame()
+        # Ensure grid weights so results panel is visible
+        try:
+            self.root.grid_columnconfigure(0, weight=1)
+            self.root.grid_columnconfigure(1, weight=2)
+            self.root.grid_rowconfigure(1, weight=1)  # plots + results row grows
+            self.root.grid_rowconfigure(2, weight=0)  # params tabs fixed height
+            self.root.grid_rowconfigure(3, weight=0)  # table row fixed
+        except Exception:
+            pass
+        # Ensure grid weights so the params notebook is visible and resizes
+        try:
+            self.root.grid_columnconfigure(0, weight=1)
+            self.root.grid_columnconfigure(1, weight=2)
+            self.root.grid_rowconfigure(1, weight=1)  # results + plots row
+            self.root.grid_rowconfigure(2, weight=1)  # parameters row
+        except Exception:
+            pass
         self.refresh_table()
         self.plot_projection()
 
     def setup_results_frame(self):
         self.results_frame = ttk.LabelFrame(self.root, text="Simulation Results", padding="10")
         self.results_frame.grid(row=1, column=0, padx=10, pady=(10, 0), sticky="nsew")
+        container = ttk.Frame(self.results_frame)
+        container.pack(fill=tk.BOTH, expand=True)
         self.results_table = ttk.Treeview(
-            self.results_frame,
+            container,
             columns=("Parameter", "Value", "Unit"),
             show='headings',
-            height=10
+            height=12
         )
+        vsb = ttk.Scrollbar(container, orient="vertical", command=self.results_table.yview)
+        self.results_table.configure(yscrollcommand=vsb.set)
+        self.results_table.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
         for col in ("Parameter", "Value", "Unit"):
             self.results_table.heading(col, text=col)
-            self.results_table.column("Parameter", anchor="w", width=270)  # wider for text
-            self.results_table.column("Value", anchor="center", width=140)
-            self.results_table.column("Unit", anchor="center", width=70)   # narrower for 'mm', 'px'
-            self.results_table.pack(fill=tk.BOTH, expand=True)
+            self.results_table.column("Parameter", anchor="w", width=290)
+            self.results_table.column("Value", anchor="center", width=160)
+            self.results_table.column("Unit", anchor="center", width=80)
 
     def update_simulation_results(self, data):
         """
@@ -154,28 +186,89 @@ class ProjectionApp:
         Adds resolution per tile and dead band information for better clarity.
         """
         self.results_table.delete(*self.results_table.get_children())
-        results = [
-            ("Realistic Sensor Resolution", f"{data['pixels_x_sensor']} × {data['pixels_y_sensor']}", "px"),
-            ("Resolution Per Tile", f"{data.get('pixels_x_per_tile', 0):.0f} × {data.get('pixels_y_per_tile', 0):.0f}", "px"),
-            ("Dead Zone (between tiles)", f"{data.get('deadzone_px', 0):.0f}", "px"),
-            ("Naive Resolution", f"{data['pixels_x_naive']} × {data['pixels_y_naive']}", "px"),
-            ("Realistic Sensor FOV", f"{data.get('FOV_H_sensor', 0):.2f} × {data.get('FOV_V_sensor', 0):.2f}", "deg"),
-            ("Naive Sensor FOV", f"{data.get('FOV_H_naive', 0):.2f} × {data.get('FOV_V_naive', 0):.2f}", "deg"),
-            ("Water Coverage", f"{data.get('water_coverage_percent', 0):.1f}", "%"),
-            ("Optimal Tilt Angle", f"{data.get('optimal_angle', 0):.1f}", "deg"),
-            ("Projection Offset", f"{data.get('projection_offset', 0):.1f}", "mm"),
-            ("Sensor Aspect Ratio", data.get('aspect_ratio_used', ''), "-"),
-            ("Optics Diameter", f"{data.get('optics_diameter', 0):.1f}", "mm"),
-            ("Maximum Projected IFOV", f"{data.get('max_ifov', 0):.4f}", "mm"),
-            ("Minimum Projected IFOV", f"{data.get('min_ifov', 0):.4f}", "mm"),
-            ("Sensor Size [mm]", f"{data.get('sensor_width_mm', 0):.2f} × {data.get('sensor_height_mm', 0):.2f}", "mm"),
-        ]
+        mode = data.get('mode', 'IFOV')
+        results = []
+        if mode == 'FOV':
+            # In FOV mode, show user-provided sensor resolution; group all FOV outputs together
+            # fov_polygon_world now represents ONE TILE's footprint (since each tile has its own lens)
+            eff_tile_w_mm = eff_tile_h_mm = 0.0
+            if isinstance(data.get('fov_polygon_world'), (list, tuple)) and len(data['fov_polygon_world']) >= 3:
+                pts = np.array(data['fov_polygon_world'])
+                eff_tile_w_mm = float(np.max(pts[:,0]) - np.min(pts[:,0]))
+                eff_tile_h_mm = float(np.max(pts[:,1]) - np.min(pts[:,1]))
+            
+            # Full array footprint = tile footprint × number of tiles (ignoring gaps for simplicity)
+            nx, ny = parse_camera_setup(data.get('CameraSetup', '1x1'))
+            eff_w_mm = eff_tile_w_mm * nx
+            eff_h_mm = eff_tile_h_mm * ny
+            
+            # FOV outputs first (grouped one under another)
+            results.extend([
+                ("Naive Sensor FOV [deg]", f"{data.get('FOV_H_sensor', 0):.2f} × {data.get('FOV_V_sensor', 0):.2f}", "deg"),
+                ("Effective FOV Footprint [mm]", f"{eff_w_mm:.1f} × {eff_h_mm:.1f}", "mm"),
+                ("Effective FOV Footprint Per Tile [mm]", f"{eff_tile_w_mm:.1f} × {eff_tile_h_mm:.1f}", "mm"),
+                ("Naive Camera FOV Per Tile [deg]", f"{(data.get('FOV_H_per_tile') or 0):.2f} × {(data.get('FOV_V_per_tile') or 0):.2f}", "deg"),
+            ])
+            # Then resolution-related and other metrics
+            results.extend([
+                ("Sensor Resolution (user)", f"{data.get('pixels_x_sensor', data.get('SensorPixelsX', 0))} × {data.get('pixels_y_sensor', data.get('SensorPixelsY', 0))}", "px"),
+                ("Active Pixel Fraction (by Image Circle)", f"{100.0*data.get('active_pixel_fraction',1.0):.1f}", "%"),
+                ("Sensor Resolution Per Tile", f"{data.get('pixels_x_per_tile', 0):.0f} × {data.get('pixels_y_per_tile', 0):.0f}", "px"),
+                ("Dead Zone (between tiles)", f"{data.get('deadzone_px', 0):.0f}", "px"),
+                ("Water Coverage", f"{data.get('water_coverage_percent', 0):.1f}", "%"),
+                ("FOV Coverage", f"{data.get('fov_coverage_percent', 0):.1f}", "%"),
+                ("Optimal Tilt Angle", f"{data.get('optimal_angle', 0):.1f}", "deg"),
+                ("Projection Offset", f"{data.get('projection_offset', 0):.1f}", "mm"),
+                ("Sensor Aspect Ratio", data.get('aspect_ratio_used', ''), "-"),
+                ("Optics Diameter", f"{data.get('optics_diameter', 0):.1f}", "mm"),
+                ("Maximum Projected IFOV", f"{data.get('max_ifov', 0):.4f}", "mm"),
+                ("Minimum Projected IFOV", f"{data.get('min_ifov', 0):.4f}", "mm"),
+                ("Sensor Size [mm]", f"{data.get('sensor_width_mm', 0):.2f} × {data.get('sensor_height_mm', 0):.2f}", "mm"),
+            ])
+        else:
+            # IFOV mode: keep existing detailed rows
+            results.extend([
+                ("Realistic Sensor Resolution", f"{data['pixels_x_sensor']} × {data['pixels_y_sensor']}", "px"),
+                ("Resolution Per Tile", f"{data.get('pixels_x_per_tile', 0):.0f} × {data.get('pixels_y_per_tile', 0):.0f}", "px"),
+                ("Dead Zone (between tiles)", f"{data.get('deadzone_px', 0):.0f}", "px"),
+                ("Naive Resolution", f"{data['pixels_x_naive']} × {data['pixels_y_naive']}", "px"),
+                ("Realistic Sensor FOV", f"{data.get('FOV_H_sensor', 0):.2f} × {data.get('FOV_V_sensor', 0):.2f}", "deg"),
+                ("Naive Sensor FOV", f"{data.get('FOV_H_naive', 0):.2f} × {data.get('FOV_V_naive', 0):.2f}", "deg"),
+                ("Water Coverage", f"{data.get('water_coverage_percent', 0):.1f}", "%"),
+                ("FOV Coverage", f"{data.get('fov_coverage_percent', 0):.1f}", "%"),
+                ("Optimal Tilt Angle", f"{data.get('optimal_angle', 0):.1f}", "deg"),
+                ("Projection Offset", f"{data.get('projection_offset', 0):.1f}", "mm"),
+                ("Sensor Aspect Ratio", data.get('aspect_ratio_used', ''), "-"),
+                ("Optics Diameter", f"{data.get('optics_diameter', 0):.1f}", "mm"),
+                ("Maximum Projected IFOV", f"{data.get('max_ifov', 0):.4f}", "mm"),
+                ("Minimum Projected IFOV", f"{data.get('min_ifov', 0):.4f}", "mm"),
+                ("Sensor Size [mm]", f"{data.get('sensor_width_mm', 0):.2f} × {data.get('sensor_height_mm', 0):.2f}", "mm"),
+            ])
         for param, value, unit in results:
             self.results_table.insert("", tk.END, values=(param, value, unit))
 
-    def setup_params_frame(self):
-        param_frame = ttk.LabelFrame(self.root, text="Parameters", padding="10")
-        param_frame.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
+    def setup_params_tabs(self):
+        self.param_notebook = ttk.Notebook(self.root)
+        self.param_notebook.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
+        # Give the notebook a minimum height to avoid collapsing
+        try:
+            self.param_notebook.update_idletasks()
+            self.param_notebook.winfo_toplevel().update_idletasks()
+        except Exception:
+            pass
+        # IFOV-based tab (existing panel)
+        self.ifov_tab = ttk.Frame(self.param_notebook)
+        self.param_notebook.add(self.ifov_tab, text="IFOVBased")
+        # FOV-based tab (new panel)
+        self.fov_tab = ttk.Frame(self.param_notebook)
+        self.param_notebook.add(self.fov_tab, text="FOVBased")
+        # Build panels
+        self._build_ifov_params(self.ifov_tab)
+        self._build_fov_params(self.fov_tab)
+
+    def _build_ifov_params(self, parent):
+        param_frame = ttk.LabelFrame(parent, text="Parameters", padding="10")
+        param_frame.pack(fill=tk.BOTH, expand=True)
         for i, (label, default) in enumerate(self.param_labels):
             lbl = tk.Label(param_frame, text=label, font=self.param_font)
             lbl.grid(row=i, column=0, sticky="e", padx=5, pady=5)
@@ -184,6 +277,12 @@ class ProjectionApp:
             entry.grid(row=i, column=1, padx=5, pady=5)
             self.entries[self.param_keys[i]] = entry
             param = self.param_keys[i]
+            # Add +/- to all numeric inputs except Resolution
+            if param in {"A","B","C"}:
+                tk.Button(param_frame, text="−", font=self.param_font, width=2,
+                          command=lambda p=param: self.adjust_param(p, -1)).grid(row=i, column=2)
+                tk.Button(param_frame, text="+", font=self.param_font, width=2,
+                          command=lambda p=param: self.adjust_param(p, 1)).grid(row=i, column=3)
             if param == "Tilt":
                 tk.Button(param_frame, text="−", font=self.param_font, width=2,
                           command=lambda p=param: self.adjust_param(p, -1)).grid(row=i, column=2)
@@ -209,12 +308,25 @@ class ProjectionApp:
                           command=lambda p=param: self.adjust_param(p, -0.1)).grid(row=i, column=2)
                 tk.Button(param_frame, text="+", font=self.param_font, width=2,
                           command=lambda p=param: self.adjust_param(p, 0.1)).grid(row=i, column=3)
-            elif param == "Resolution":
-                tk.Button(param_frame, text="−", font=self.param_font, width=2,
-                        command=lambda p=param: self.adjust_param(p, -0.01)).grid(row=i, column=2)
-                tk.Button(param_frame, text="+", font=self.param_font, width=2,
-                        command=lambda p=param: self.adjust_param(p, 0.01)).grid(row=i, column=3)
+            # Exclude Resolution from +/- controls per request
         next_row = len(self.param_labels)
+        # Add lens Image Circle [mm]
+        tk.Label(param_frame, text="Image Circle [mm]", font=self.param_font).grid(row=next_row, column=0, sticky="e", padx=5, pady=5)
+        self.image_circle_entry_ifov = tk.Entry(param_frame, font=self.param_font, width=12)
+        self.image_circle_entry_ifov.insert(0, "0")
+        self.image_circle_entry_ifov.grid(row=next_row, column=1, padx=5, pady=5)
+        def adjust_image_circle_ifov(delta):
+            try:
+                val = safe_float(self.image_circle_entry_ifov.get(), 0.0) + delta
+                self.image_circle_entry_ifov.delete(0, tk.END)
+                self.image_circle_entry_ifov.insert(0, f"{max(0.0, val):.1f}")
+                self.plot_projection()
+            except Exception:
+                pass
+        tk.Button(param_frame, text="−", font=self.param_font, width=2,
+                  command=lambda: adjust_image_circle_ifov(-0.5)).grid(row=next_row, column=2)
+        tk.Button(param_frame, text="+", font=self.param_font, width=2,
+                  command=lambda: adjust_image_circle_ifov(0.5)).grid(row=next_row, column=3)
 
         lbl = tk.Label(param_frame, text="Shift Axis:", font=self.param_font)
         lbl.grid(row=next_row, column=0, sticky="e", padx=5, pady=5)
@@ -287,6 +399,161 @@ class ProjectionApp:
             font=self.param_font,
             command=self.plot_projection)
         ifov_check.grid(row=next_row+5, column=0, columnspan=2, sticky="w", pady=(8,2))
+        
+        self.flip_image_plane_var = tk.BooleanVar(value=True)  # Default ON
+        self.flip_button_ifov = tk.Button(param_frame,
+            text="Flip: ON",
+            font=self.param_font,
+            command=self.toggle_flip_image_plane,
+            bg="lightgreen")
+        self.flip_button_ifov.grid(row=next_row+6, column=0, columnspan=2, sticky="ew", pady=(8,2), padx=5)
+
+    def _build_fov_params(self, parent):
+        frame = ttk.LabelFrame(parent, text="FOV-Based Parameters", padding="10")
+        frame.pack(fill=tk.BOTH, expand=True)
+        # Reuse core geometric params A,B,C,Tilt,Margin,Shift,DeadZone,PixelPitch
+        labels = [
+            ("A - Rim to Water depth (camera height) [mm]:", "133"),
+            ("B - Water Spot Length [mm]:", "317.5"),
+            ("C - Water Spot Width [mm]:", "266.7"),
+            ("Camera Tilt [degrees]:", "30"),
+            ("Margin [%]:", "10"),
+            ("Shift from Water Spot Width Edge [mm]:", "0"),
+            ("Dead zone [mm]:", "0.3"),
+            ("Pixel pitch [um]:", "2.0"),
+        ]
+        self.fov_entries = {}
+        for i,(label,default) in enumerate(labels):
+            tk.Label(frame, text=label, font=self.param_font).grid(row=i, column=0, sticky="e", padx=5, pady=5)
+            e = tk.Entry(frame, font=self.param_font, width=12)
+            e.insert(0, default)
+            e.grid(row=i, column=1, padx=5, pady=5)
+            self.fov_entries[label] = e
+            # Add +/- controls similar to IFOV tab
+            lbl_key_map = {
+                "A - Rim to Water depth (camera height) [mm]:": (None, 1.0),
+                "B - Water Spot Length [mm]:": (None, 1.0),
+                "C - Water Spot Width [mm]:": (None, 1.0),
+                "Camera Tilt [degrees]:": ("Tilt", 1.0),
+                "Margin [%]:": ("Margin", 1.0),
+                "Shift from Water Spot Width Edge [mm]:": ("Shift", 5.0),
+                "Dead zone [mm]:": ("DeadZone", 0.1),
+                "Pixel pitch [um]:": ("PixelPitch", 0.1),
+            }
+            key_pair = lbl_key_map.get(label)
+            if key_pair:
+                key_name, step = key_pair
+                # Use a local adjust that targets fov_entries
+                def adjust_fov(label_key=label, delta=step):
+                    try:
+                        val = safe_float(self.fov_entries[label_key].get(), 0.0)
+                        val += delta
+                        # clamp deadzone >= 0
+                        if label_key == "Dead zone [mm]:":
+                            val = max(0.0, val)
+                        self.fov_entries[label_key].delete(0, tk.END)
+                        # two decimals for micrometer/mm fields, one for angles
+                        fmt = "{:.2f}" if label_key in ("Dead zone [mm]:", "Pixel pitch [um]:") else "{:.1f}"
+                        self.fov_entries[label_key].insert(0, fmt.format(val))
+                        self.plot_projection()
+                    except Exception:
+                        pass
+                tk.Button(frame, text="−", font=self.param_font, width=2,
+                          command=lambda l=label, s=step: adjust_fov(l, -s)).grid(row=i, column=2)
+                tk.Button(frame, text="+", font=self.param_font, width=2,
+                          command=lambda l=label, s=step: adjust_fov(l, s)).grid(row=i, column=3)
+        r = len(labels)
+        # New inputs for FOV-based mode
+        tk.Label(frame, text="Focal Length [mm]:", font=self.param_font).grid(row=r, column=0, sticky="e", padx=5, pady=5)
+        self.focal_length_entry = tk.Entry(frame, font=self.param_font, width=12)
+        self.focal_length_entry.insert(0, "6.0")
+        self.focal_length_entry.grid(row=r, column=1, padx=5, pady=5)
+        # +/- for focal length
+        def adjust_focal(delta):
+            try:
+                val = safe_float(self.focal_length_entry.get(), 6.0) + delta
+                self.focal_length_entry.delete(0, tk.END)
+                self.focal_length_entry.insert(0, f"{val:.1f}")
+                self.plot_projection()
+            except Exception:
+                pass
+        tk.Button(frame, text="−", font=self.param_font, width=2,
+                  command=lambda: adjust_focal(-0.5)).grid(row=r, column=2)
+        tk.Button(frame, text="+", font=self.param_font, width=2,
+                  command=lambda: adjust_focal(0.5)).grid(row=r, column=3)
+        tk.Label(frame, text="Sensor Resolution [px × px]", font=self.param_font).grid(row=r+1, column=0, sticky="e", padx=5, pady=5)
+        self.sensor_res_entry = tk.Entry(frame, font=self.param_font, width=12)
+        self.sensor_res_entry.insert(0, "1920x1080")
+        self.sensor_res_entry.grid(row=r+1, column=1, padx=5, pady=5)
+        
+        # Image Circle [mm] with +/- buttons
+        tk.Label(frame, text="Image Circle [mm]", font=self.param_font).grid(row=r+2, column=0, sticky="e", padx=5, pady=5)
+        self.image_circle_entry_fov = tk.Entry(frame, font=self.param_font, width=12)
+        self.image_circle_entry_fov.insert(0, "0")
+        self.image_circle_entry_fov.grid(row=r+2, column=1, padx=5, pady=5)
+        def adjust_image_circle_fov(delta):
+            try:
+                val = safe_float(self.image_circle_entry_fov.get(), 0.0) + delta
+                self.image_circle_entry_fov.delete(0, tk.END)
+                self.image_circle_entry_fov.insert(0, f"{max(0.0, val):.1f}")
+                self.plot_projection()
+            except Exception:
+                pass
+        tk.Button(frame, text="−", font=self.param_font, width=2,
+                  command=lambda: adjust_image_circle_fov(-0.5)).grid(row=r+2, column=2)
+        tk.Button(frame, text="+", font=self.param_font, width=2,
+                  command=lambda: adjust_image_circle_fov(0.5)).grid(row=r+2, column=3)
+        
+        # Controls
+        tk.Label(frame, text="Shift Axis:", font=self.param_font).grid(row=r+3, column=0, sticky="e", padx=5, pady=5)
+        radio_frame = tk.Frame(frame)
+        radio_frame.grid(row=r+3, column=1, padx=5, pady=5, sticky="w")
+        tk.Radiobutton(radio_frame, text="X", variable=self.shift_axis_var,
+                       value="X", font=self.param_font, command=self.plot_projection).pack(side=tk.LEFT)
+        tk.Radiobutton(radio_frame, text="Y", variable=self.shift_axis_var,
+                       value="Y", font=self.param_font, command=self.plot_projection).pack(side=tk.LEFT, padx=(10,0))
+        tk.Label(frame, text="Plot camera setup:", font=self.param_font).grid(row=r+4, column=0, sticky="e", padx=5, pady=5)
+        self.camera_setup_dropdown_fov = ttk.Combobox(frame, values=CAMERA_SETUP_OPTIONS, font=self.param_font,
+                                                      textvariable=self.camera_setup_var, width=8, state="readonly")
+        self.camera_setup_dropdown_fov.grid(row=r+4, column=1, padx=5, pady=5, sticky="w")
+        
+        # Add flip button and plot button side by side
+        button_frame = tk.Frame(frame)
+        button_frame.grid(row=r+5, column=0, columnspan=4, pady=10)
+        tk.Button(button_frame, text="Plot", font=self.param_font, command=self.plot_projection, width=15).pack(side=tk.LEFT, padx=5)
+        # Flip button - default state is ON
+        flip_state = self.flip_image_plane_var.get() if hasattr(self, 'flip_image_plane_var') else True
+        self.flip_button_fov = tk.Button(button_frame, 
+                                         text="Flip: ON" if flip_state else "Flip: OFF", 
+                                         font=self.param_font, 
+                                         command=self.toggle_flip_image_plane, 
+                                         width=20, 
+                                         bg="lightgreen" if flip_state else "lightgray")
+        self.flip_button_fov.pack(side=tk.LEFT, padx=5)
+        # Show toilet image in this tab as well
+        image_path = find_image_case_insensitive("image.png") or find_image_case_insensitive("image.jpg")
+        if image_path:
+            try:
+                from PIL import Image, ImageTk
+                self.original_img_fov = Image.open(image_path)
+                self.tk_img_fov = None
+                self.img_label_fov = tk.Label(frame)
+                self.img_label_fov.grid(row=r+6, column=0, columnspan=2, pady=10, sticky="nsew")
+                def resize_image_fov(event=None):
+                    width = frame.winfo_width() - 40
+                    height = max(100, int(frame.winfo_height() * 0.25))
+                    if width < 50: width = 100
+                    if height < 50: height = 100
+                    img = self.original_img_fov.copy()
+                    img.thumbnail((width, height), Image.LANCZOS)
+                    self.tk_img_fov = ImageTk.PhotoImage(img)
+                    self.img_label_fov.config(image=self.tk_img_fov)
+                frame.bind('<Configure>', resize_image_fov)
+                resize_image_fov()
+            except Exception:
+                tk.Label(frame, text="Failed to load image file", font=self.param_font, fg="red").grid(row=r+6, column=0, columnspan=2, pady=10)
+        else:
+            tk.Label(frame, text="image.png/.jpg not found", font=self.param_font, fg="red").grid(row=r+6, column=0, columnspan=2, pady=10)
 
     def adjust_param(self, key, delta):
         entry = self.entries[key]
@@ -363,58 +630,178 @@ class ProjectionApp:
 
     def get_current_parameters(self):
         try:
-            deadzone = max(0, safe_float(self.entries['DeadZone'].get(), 0.3))  # Ensure deadzone is non-negative
-            self.entries['DeadZone'].delete(0, tk.END)
-            self.entries['DeadZone'].insert(0, str(deadzone))  # Update the entry with validated value
-            
-            return {
-                'A': safe_float(self.entries['A'].get(), 133),
-                'B': safe_float(self.entries['B'].get(), 317.5),
-                'C': safe_float(self.entries['C'].get(), 266.7),
-                'Tilt': safe_float(self.entries['Tilt'].get(), 30),
-                'Margin': safe_float(self.entries['Margin'].get(), 10),
-                'Shift': safe_float(self.entries['Shift'].get(), 0),
-                'ShiftAxis': self.shift_axis_var.get(),
-                'Resolution': safe_float(self.entries['Resolution'].get(), 0.22),
-                'DeadZone': deadzone,
-                'PixelPitch': safe_float(self.entries['PixelPitch'].get(), 2.0),
-                'CameraSetup': self.camera_setup_var.get(),
-                'Smoothness': self.smoothness_var.get(),
-                'EnforceIFOV': self.ifov_enforce_var.get(),
-                'MaxSensorRes': self.max_res_var.get(),
-                'OverlayStep': self.overlay_step_var.get(),
-            }
+            active_tab = self.param_notebook.tab(self.param_notebook.select(), "text")
+            if active_tab == "IFOVBased":
+                deadzone = max(0, safe_float(self.entries['DeadZone'].get(), 0.3))
+                self.entries['DeadZone'].delete(0, tk.END)
+                self.entries['DeadZone'].insert(0, str(deadzone))
+                return {
+                    'Mode': 'IFOV',
+                    'A': safe_float(self.entries['A'].get(), 133),
+                    'B': safe_float(self.entries['B'].get(), 317.5),
+                    'C': safe_float(self.entries['C'].get(), 266.7),
+                    'Tilt': safe_float(self.entries['Tilt'].get(), 30),
+                    'Margin': safe_float(self.entries['Margin'].get(), 10),
+                    'Shift': safe_float(self.entries['Shift'].get(), 0),
+                    'ShiftAxis': self.shift_axis_var.get(),
+                    'Resolution': safe_float(self.entries['Resolution'].get(), 0.22),
+                    'DeadZone': deadzone,
+                    'PixelPitch': safe_float(self.entries['PixelPitch'].get(), 2.0),
+                    'CameraSetup': self.camera_setup_var.get(),
+                    'Smoothness': self.smoothness_var.get(),
+                    'EnforceIFOV': self.ifov_enforce_var.get(),
+                    'MaxSensorRes': self.max_res_var.get(),
+                    'OverlayStep': self.overlay_step_var.get(),
+                    'ImageCircle': safe_float(self.image_circle_entry_ifov.get(), 0.0),
+                }
+            else:
+                # FOV-based mode parameters
+                def fget(label, default):
+                    val = self.fov_entries[label].get()
+                    return safe_float(val, default)
+                A = fget("A - Rim to Water depth (camera height) [mm]:", 133)
+                B = fget("B - Water Spot Length [mm]:", 317.5)
+                C = fget("C - Water Spot Width [mm]:", 266.7)
+                Tilt = fget("Camera Tilt [degrees]:", 30)
+                Margin = fget("Margin [%]:", 10)
+                Shift = fget("Shift from Water Spot Width Edge [mm]:", 0)
+                DeadZone = fget("Dead zone [mm]:", 0.3)
+                PixelPitch = fget("Pixel pitch [um]:", 2.0)
+                # Focal length and sensor resolution
+                focal_mm = safe_float(self.focal_length_entry.get(), 6.0)
+                res_text = self.sensor_res_entry.get().lower().replace(' ', '')
+                if 'x' in res_text:
+                    try:
+                        px_x, px_y = map(int, res_text.split('x'))
+                    except Exception:
+                        px_x, px_y = 1920, 1080
+                else:
+                    px_x, px_y = 1920, 1080
+                return {
+                    'Mode': 'FOV',
+                    'A': A, 'B': B, 'C': C,
+                    'Tilt': Tilt, 'Margin': Margin,
+                    'Shift': Shift, 'ShiftAxis': self.shift_axis_var.get(),
+                    'DeadZone': DeadZone, 'PixelPitch': PixelPitch,
+                    'CameraSetup': self.camera_setup_var.get(),
+                    'FocalLength': focal_mm,
+                    'SensorPixelsX': px_x,
+                    'SensorPixelsY': px_y,
+                    # Provide a Resolution key for get_plot_data compatibility (mm/px)
+                    'Resolution': PixelPitch / 1000.0,
+                    'Smoothness': self.smoothness_var.get(),
+                    'ImageCircle': safe_float(self.image_circle_entry_fov.get(), 0.0),
+                }
         except Exception:
             messagebox.showerror("Error", "Please enter valid numeric values for all parameters")
             return None
 
+    def toggle_flip_image_plane(self):
+        """Toggle the flip state and replot"""
+        current = self.flip_image_plane_var.get()
+        new_state = not current
+        self.flip_image_plane_var.set(new_state)
+        
+        # Update button appearance for both IFOV and FOV tabs
+        if new_state:
+            text = "Flip: ON"
+            bg = "lightgreen"
+        else:
+            text = "Flip: OFF"
+            bg="lightgray"
+        
+        if hasattr(self, 'flip_button_ifov'):
+            self.flip_button_ifov.config(text=text, bg=bg)
+        if hasattr(self, 'flip_button_fov'):
+            self.flip_button_fov.config(text=text, bg=bg)
+        
+        self.plot_projection()
+    
     def plot_projection(self):
         """
+                        # initialize per-tile FOV placeholders (computed later)
+                        plot_data['FOV_H_per_tile'] = None
+                        plot_data['FOV_V_per_tile'] = None
         Updated plot_projection method to correctly calculate sensor resolution
         for all camera setups (e.g., 1x2, 2x2), including dead zones.
         """
         params = self.get_current_parameters()
         if params is None:
             return
-
-        # Parse Camera Setup (e.g., "2x2")
+        # Common derived values
+        pixel_pitch_um = params.get("PixelPitch", 2.0)
         cam_setup_str = params.get("CameraSetup", "1x1")
-        nx, ny = parse_camera_setup(cam_setup_str)  # nx: horizontal tiles, ny: vertical tiles
-
-        # Retrieve Dead Zone and Pixel Pitch
-        deadzone_mm = params.get("DeadZone", 0.3)  # Dead zone between tiles in mm
-        pixel_pitch_um = params.get("PixelPitch", 2.0)  # Pixel pitch in micrometers (um)
-
-        # Calculate Dead Zone in Pixels
-        deadzone_px = int((1000.0 * float(deadzone_mm)) / float(pixel_pitch_um))
-
-        # Get plot data for a single tile (1x1 setup)
-        # Note: legacy projection_calculations.get_plot_data may not accept 'smoothness'
-        # so we call it without keyword to preserve compatibility.
+        try:
+            parts = cam_setup_str.lower().replace(" ", "").split("x")
+            nx = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 1
+            ny = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+        except Exception:
+            nx, ny = 1, 1
+        deadzone_mm = params.get("Dead zone [mm]:", 0.0)
+        deadzone_px = int(round(deadzone_mm / (pixel_pitch_um / 1000.0))) if pixel_pitch_um > 0 else 0
+        # Use legacy get_plot_data for base geometry
         plot_data = get_plot_data(params)
+        plot_data['mode'] = params.get('Mode', 'IFOV')
 
         # Step 1 & 2: Get initial IFOV values from projection calculations
-        target_ifov = params.get("Resolution", 0.22)        # Target resolution/IFOV from user
+        # Derive IFOV/FOV based on mode
+        mode = params.get('Mode', 'IFOV')
+        if mode == 'FOV':
+            # Use sensor inputs directly: resolution and pixels are provided by user
+            pixel_pitch_um = params.get("PixelPitch", 2.0)
+            pixel_pitch_mm = pixel_pitch_um / 1000.0
+            sensor_width_mm = pixel_pitch_mm * params.get('SensorPixelsX', 1920)
+            sensor_height_mm = pixel_pitch_mm * params.get('SensorPixelsY', 1080)
+            
+            # Image circle is the optical limiting aperture of the lens
+            img_circle_mm = max(0.0, params.get('ImageCircle', 0.0))
+            
+            # Effective sensor dimensions are limited by the smaller of sensor or image circle
+            if img_circle_mm > 0.0:
+                # Image circle diameter limits the usable sensor dimensions
+                # Assume square inscribed in circle for simplicity, or use circle diameter as limit
+                effective_width_mm = min(sensor_width_mm, img_circle_mm)
+                effective_height_mm = min(sensor_height_mm, img_circle_mm)
+                # Compute active fraction for pixel count
+                circle_area = np.pi * (img_circle_mm/2.0)**2
+                rect_area = sensor_width_mm * sensor_height_mm
+                active_frac = min(1.0, circle_area/rect_area) if rect_area>0 else 1.0
+            else:
+                effective_width_mm = sensor_width_mm
+                effective_height_mm = sensor_height_mm
+                active_frac = 1.0
+            
+            focal_mm = max(params.get('FocalLength', 6.0), 1e-6)
+            # FOV from focal length and EFFECTIVE sensor size (limited by image circle)
+            FOV_H_sensor = np.rad2deg(2 * np.arctan((effective_width_mm/2) / focal_mm))
+            FOV_V_sensor = np.rad2deg(2 * np.arctan((effective_height_mm/2) / focal_mm))
+            # Do not derive target IFOV in FOV mode; respect inputs
+            target_ifov = params.get('Resolution', pixel_pitch_mm)
+            # Store into plot_data for consistency
+            plot_data['sensor_width_mm'] = sensor_width_mm
+            plot_data['sensor_height_mm'] = sensor_height_mm
+            plot_data['effective_width_mm'] = effective_width_mm
+            plot_data['effective_height_mm'] = effective_height_mm
+            plot_data['FOV_H_sensor'] = FOV_H_sensor
+            plot_data['FOV_V_sensor'] = FOV_V_sensor
+            # Sensor resolution comes directly from user input
+            plot_data['pixels_x_sensor'] = params.get('SensorPixelsX', 1920)
+            plot_data['pixels_y_sensor'] = params.get('SensorPixelsY', 1080)
+            plot_data['image_circle_mm'] = img_circle_mm
+            plot_data['active_pixel_fraction'] = active_frac
+            plot_data['nx'] = nx
+            plot_data['ny'] = ny
+            plot_data['shift_axis'] = params.get('ShiftAxis', 'Y')
+            plot_data['shift'] = params.get('Shift', 0)
+            plot_data['margin_percent'] = params.get('Margin', 10)
+            # Compute FOV polygon on water plane and coverage (use per-TILE dimensions for projection view)
+            # Since each tile has its own lens, we show one tile's FOV in the projection plot
+            fov_poly = self._compute_fov_polygon(params, nx=nx, ny=ny)
+            plot_data['fov_polygon_world'] = fov_poly
+            coverage_pct = self._estimate_fov_coverage(params, fov_poly)
+            plot_data['fov_coverage_percent'] = coverage_pct
+        else:
+            target_ifov = params.get("Resolution", 0.22)
         
         # Calculate distances and IFOV considering perspective distortion
         tilt_rad = np.radians(params.get("Tilt", 30))
@@ -441,39 +828,91 @@ class ProjectionApp:
         scaled_length = params['B'] * margin_factor  # Water spot length with margin
 
         # Fix axes alignment - X should use width (C), Y should use length (B)
-        naive_pixels_x = int(scaled_width / target_ifov)  # X corresponds to water spot width (C)
-        naive_pixels_y = int(scaled_length / target_ifov)  # Y corresponds to water spot length (B)
+        # Naive resolution is only meaningful in IFOV mode
+        if mode == 'FOV':
+            naive_pixels_x = params.get('SensorPixelsX', 1920)
+            naive_pixels_y = params.get('SensorPixelsY', 1080)
+        else:
+            naive_pixels_x = int(scaled_width / target_ifov)  # X corresponds to water spot width (C)
+            naive_pixels_y = int(scaled_length / target_ifov)  # Y corresponds to water spot length (B)
         
-        # Calculate scaling ratio based on IFOV
-        ifov_ratio = initial_max_ifov / target_ifov
-        
-        # Calculate required pixels including perspective effects
-        required_pixels_x = int(naive_pixels_x * ifov_ratio)  # Width dimension
-        required_pixels_y = int(naive_pixels_y * ifov_ratio)  # Length dimension
-
-        # Step 5: Calculate max allowed pixels per camera/tile
-        max_pixels_per_tile_x = (params.get("MaxSensorRes", 5000) - (nx - 1) * deadzone_px) // nx
-        max_pixels_per_tile_y = (params.get("MaxSensorRes", 5000) - (ny - 1) * deadzone_px) // ny
-
-        # Step 6: Adjust resolution to maintain aspect ratio if needed
-        scaling_ratio = 1.0
-        if required_pixels_x > max_pixels_per_tile_x or required_pixels_y > max_pixels_per_tile_y:
-            ratio_x = max_pixels_per_tile_x / required_pixels_x if required_pixels_x > max_pixels_per_tile_x else 1.0
-            ratio_y = max_pixels_per_tile_y / required_pixels_y if required_pixels_y > max_pixels_per_tile_y else 1.0
-            scaling_ratio = min(ratio_x, ratio_y)
-
-        # Calculate final pixels per tile
-        pixels_x_per_tile = int(required_pixels_x * scaling_ratio)
-        pixels_y_per_tile = int(required_pixels_y * scaling_ratio)
-
-        # Calculate total pixels including dead zones
-        total_pixels_x = nx * pixels_x_per_tile + (nx - 1) * deadzone_px
-        total_pixels_y = ny * pixels_y_per_tile + (ny - 1) * deadzone_px
-
-        # Step 7: Update IFOV values based on final scaling
-        final_ratio = ifov_ratio * scaling_ratio
-        final_min_ifov = initial_min_ifov / final_ratio
-        final_max_ifov = initial_max_ifov / final_ratio
+        if mode == 'IFOV':
+            # Calculate scaling ratio based on IFOV
+            ifov_ratio = initial_max_ifov / target_ifov
+            # Calculate required pixels including perspective effects
+            required_pixels_x = int(naive_pixels_x * ifov_ratio)  # Width dimension
+            required_pixels_y = int(naive_pixels_y * ifov_ratio)  # Length dimension
+            # Step 5: Calculate max allowed pixels per camera/tile
+            max_pixels_per_tile_x = (params.get("MaxSensorRes", 5000) - (nx - 1) * deadzone_px) // nx
+            max_pixels_per_tile_y = (params.get("MaxSensorRes", 5000) - (ny - 1) * deadzone_px) // ny
+            # Step 6: Adjust resolution to maintain aspect ratio if needed
+            scaling_ratio = 1.0
+            if required_pixels_x > max_pixels_per_tile_x or required_pixels_y > max_pixels_per_tile_y:
+                ratio_x = max_pixels_per_tile_x / required_pixels_x if required_pixels_x > max_pixels_per_tile_x else 1.0
+                ratio_y = max_pixels_per_tile_y / required_pixels_y if required_pixels_y > max_pixels_per_tile_y else 1.0
+                scaling_ratio = min(ratio_x, ratio_y)
+            # Calculate final pixels per tile
+            pixels_x_per_tile = int(required_pixels_x * scaling_ratio)
+            pixels_y_per_tile = int(required_pixels_y * scaling_ratio)
+            # Calculate total pixels including dead zones
+            total_pixels_x = nx * pixels_x_per_tile + (nx - 1) * deadzone_px
+            total_pixels_y = ny * pixels_y_per_tile + (ny - 1) * deadzone_px
+            # Step 7: Update IFOV values based on final scaling
+            final_ratio = ifov_ratio * scaling_ratio
+            final_min_ifov = initial_min_ifov / final_ratio
+            final_max_ifov = initial_max_ifov / final_ratio
+        else:
+            # FOV mode: use user sensor resolution; compute per-tile by splitting
+            total_pixels_x = params.get('SensorPixelsX', 1920)
+            total_pixels_y = params.get('SensorPixelsY', 1080)
+            pixel_pitch_mm = pixel_pitch_um / 1000.0
+            
+            # Get effective sensor dimensions (already limited by image circle in FOV mode block above)
+            effective_width_mm = plot_data.get('effective_width_mm', pixel_pitch_mm * total_pixels_x)
+            effective_height_mm = plot_data.get('effective_height_mm', pixel_pitch_mm * total_pixels_y)
+            
+            # For 1x1 setup, per-tile FOV equals full sensor FOV (no dead zones, no splitting)
+            if nx == 1 and ny == 1:
+                # No tiles to split, use effective dimensions directly
+                plot_data['FOV_H_per_tile'] = plot_data.get('FOV_H_sensor', 0.0)
+                plot_data['FOV_V_per_tile'] = plot_data.get('FOV_V_sensor', 0.0)
+                # Effective pixels are the same as what fits in the image circle
+                eff_pixels_x_total = int(effective_width_mm / pixel_pitch_mm)
+                eff_pixels_y_total = int(effective_height_mm / pixel_pitch_mm)
+                pixels_x_per_tile = eff_pixels_x_total
+                pixels_y_per_tile = eff_pixels_y_total
+                # For projection view: tile sensor dimensions = effective sensor dimensions
+                plot_data['tile_sensor_half_width_mm'] = effective_width_mm / 2.0
+                plot_data['tile_sensor_half_height_mm'] = effective_height_mm / 2.0
+            else:
+                # Multiple tiles: account for dead zones and split
+                # Convert effective dimensions back to effective pixel count
+                eff_pixels_x_total = int(effective_width_mm / pixel_pitch_mm)
+                eff_pixels_y_total = int(effective_height_mm / pixel_pitch_mm)
+                
+                # Remove dead zones from effective sensor for splitting
+                usable_pixels_x = max(eff_pixels_x_total - (nx - 1) * deadzone_px, 0)
+                usable_pixels_y = max(eff_pixels_y_total - (ny - 1) * deadzone_px, 0)
+                pixels_x_per_tile = usable_pixels_x // nx if nx > 0 else usable_pixels_x
+                pixels_y_per_tile = usable_pixels_y // ny if ny > 0 else usable_pixels_y
+                
+                # Per-tile FOV from effective tile dimensions (limited by image circle)
+                tile_width_mm = pixel_pitch_mm * pixels_x_per_tile
+                tile_height_mm = pixel_pitch_mm * pixels_y_per_tile
+                focal_mm = max(params.get('FocalLength', 6.0), 1e-6)
+                fov_h_tile = np.rad2deg(2 * np.arctan((tile_width_mm/2) / focal_mm))
+                fov_v_tile = np.rad2deg(2 * np.arctan((tile_height_mm/2) / focal_mm))
+                plot_data['FOV_H_per_tile'] = min(fov_h_tile, plot_data.get('FOV_H_sensor', fov_h_tile))
+                plot_data['FOV_V_per_tile'] = min(fov_v_tile, plot_data.get('FOV_V_sensor', fov_v_tile))
+                # For projection view: tile sensor dimensions
+                plot_data['tile_sensor_half_width_mm'] = tile_width_mm / 2.0
+                plot_data['tile_sensor_half_height_mm'] = tile_height_mm / 2.0
+            
+            # Store active fraction for display
+            active_frac = plot_data.get('active_pixel_fraction', 1.0)
+            
+            final_min_ifov = initial_min_ifov
+            final_max_ifov = initial_max_ifov
 
         # Update the plot data with all calculated values
         # Calculate sensor physical size in mm (converting from micrometers)
@@ -493,7 +932,11 @@ class ProjectionApp:
         plot_data['naive_pixels_y'] = naive_pixels_y
         plot_data['sensor_width_mm'] = sensor_width_mm
         plot_data['sensor_height_mm'] = sensor_height_mm
-        plot_data['scaling_ratio'] = scaling_ratio  # Store the final scaling ratio
+        # Ensure scaling_ratio is defined for both modes
+        if mode == 'IFOV':
+            plot_data['scaling_ratio'] = scaling_ratio  # Store the final scaling ratio
+        else:
+            plot_data['scaling_ratio'] = 1.0
 
         # Calculate max_radius from the projected rectangle points
         # This gives us the actual maximum distance in the projected view
@@ -508,6 +951,22 @@ class ProjectionApp:
             # Fallback to sensor diagonal if projection points aren't available
             max_radius = np.sqrt(sensor_width_mm**2 + sensor_height_mm**2) / 2
         plot_data['max_radius'] = max_radius
+
+        # Store tile dimensions for projection view overlay (needed before plotting)
+        if mode == 'FOV':
+            # Calculate tile sensor dimensions for green box overlay
+            pixel_pitch_mm = pixel_pitch_um / 1000.0
+            effective_width_mm = plot_data.get('effective_width_mm', pixel_pitch_mm * params.get('SensorPixelsX', 1920))
+            effective_height_mm = plot_data.get('effective_height_mm', pixel_pitch_mm * params.get('SensorPixelsY', 1080))
+            
+            if nx == 1 and ny == 1:
+                plot_data['tile_sensor_half_width_mm'] = effective_width_mm / 2.0
+                plot_data['tile_sensor_half_height_mm'] = effective_height_mm / 2.0
+            else:
+                tile_width_mm = pixel_pitch_mm * pixels_x_per_tile
+                tile_height_mm = pixel_pitch_mm * pixels_y_per_tile
+                plot_data['tile_sensor_half_width_mm'] = tile_width_mm / 2.0
+                plot_data['tile_sensor_half_height_mm'] = tile_height_mm / 2.0
 
         # Debugging: Print detailed calculations for verification
         print(f"Camera Setup: {cam_setup_str} (nx={nx}, ny={ny})")
@@ -539,19 +998,62 @@ class ProjectionApp:
         # Close the rectangle by adding the first point at the end
         rect_points = np.vstack([data['rect_corners'], data['rect_corners'][0]])
         ax.plot(rect_points[:, 0], rect_points[:, 1], 'b-', lw=2, label='Water Spot Rectangle')
-        ax.add_patch(Ellipse((0, 0), data['C'], data['L'], edgecolor='r', facecolor='r', alpha=0.3, lw=2, label='Water Spot Ellipse'))
+        ax.add_patch(Ellipse((0, 0), data['C'], data['L'], edgecolor='r', facecolor='r', alpha=0.3, lw=2, label='Water Area'))
         camera_size = 20
         color = 'green' if data['shift_axis'] == 'X' else 'blue'
         ax.add_patch(Rectangle((data['Xc'] - camera_size/2, data['Yc'] - camera_size/2), camera_size, camera_size,
                                color=color, alpha=0.7, label=f'Camera ({data["shift_axis"]}-axis)'))
         ax.plot([data['Xc']], [data['Yc']], 'go' if data['shift_axis'] == 'X' else 'bo')
-        for point in data['fov_points_world']:
-            ax.plot([data['Xc'], point[0]], [data['Yc'], point[1]], 'gray', linestyle='--', linewidth=1, alpha=0.6)
+        # Fill camera FOV polygons for all tiles in world view (distinct hues)
+        if data.get('mode','IFOV')=='FOV':
+            nx, ny = parse_camera_setup(data.get('CameraSetup','1x1'))
+            added_label = False
+            
+            # Draw overall image circle footprint (outline)
+            fov_polygon_world = data.get('fov_polygon_world')
+            if fov_polygon_world and len(fov_polygon_world) >= 3:
+                try:
+                    pts = np.array(fov_polygon_world)
+                    ax.plot(pts[:,0], pts[:,1], 'g-', linewidth=2.5, label='Image Circle Footprint', alpha=0.8)
+                    ax.fill(pts[:,0], pts[:,1], color=(0, 1, 0, 0.1))
+                    
+                    # Draw rays from camera to FOV corners/edge points
+                    # Sample every 8th point to avoid clutter
+                    cam_x, cam_y = data['Xc'], data['Yc']
+                    sample_step = max(len(pts) // 8, 1)
+                    for i in range(0, len(pts), sample_step):
+                        ax.plot([cam_x, pts[i,0]], [cam_y, pts[i,1]], 'g--', linewidth=0.8, alpha=0.4)
+                except Exception as e:
+                    print(f"Error drawing FOV footprint: {e}")
+            
+            # Draw individual tiles only if more than 1x1 (otherwise redundant with overall footprint)
+            if nx > 1 or ny > 1:
+                for ty in range(max(ny,1)):
+                    for tx in range(max(nx,1)):
+                        tile_poly = self._compute_tile_fov_polygon(
+                            data,
+                            nx=nx, ny=ny,
+                            tile_ix=tx, tile_iy=ty,
+                            pixels_x_per_tile=data.get('pixels_x_per_tile'),
+                            pixels_y_per_tile=data.get('pixels_y_per_tile')
+                        )
+                        try:
+                            pts = np.array(tile_poly)
+                            lbl = 'Camera FOV (tiles)' if not added_label else '_nolegend_'
+                            hue = ((ty*max(nx,1)+tx)+1) / max(nx*ny,1)
+                            rgb = colorsys.hsv_to_rgb(hue, 0.5, 0.9)
+                            ax.fill(pts[:,0], pts[:,1], color=(rgb[0], rgb[1], rgb[2], 0.18), label=lbl)
+                            ax.plot(pts[:,0], pts[:,1], color=rgb, alpha=0.7, linewidth=1.5, label=lbl)
+                            cx, cy = np.mean(pts[:,0]), np.mean(pts[:,1])
+                            ax.text(cx, cy, f"{tx+1},{ty+1}", fontsize=8, color=rgb)
+                            added_label = True
+                        except Exception:
+                            pass
         ax.set_xlim(-300, 300)
         ax.set_ylim(-300, 300)
         ax.set_xlabel('X [mm]', fontsize=GRAPH_LABEL_FONTSIZE)
         ax.set_ylabel('Y [mm]', fontsize=GRAPH_LABEL_FONTSIZE)
-        ax.set_title('Top-Down View (World Coordinates)', fontsize=GRAPH_TITLE_FONTSIZE)
+        ax.set_title('Object Plane - Top View (World Coordinates)', fontsize=GRAPH_TITLE_FONTSIZE)
         ax.tick_params(axis='both', labelsize=GRAPH_TICK_FONTSIZE)
         ax.legend(loc='upper right', fontsize=GRAPH_LEGEND_FONTSIZE)
         ax.grid(True, alpha=0.3)
@@ -686,26 +1188,340 @@ class ProjectionApp:
       
 
         # --- Existing code for overlays and lines, unchanged ---
-        ax.plot(data['proj_ellipse_pts'][:, 0], data['proj_ellipse_pts'][:, 1], 'r-', linewidth=2, label='Projected Ellipse')
-        ax.plot(data['proj_rect_outline'][:, 0], data['proj_rect_outline'][:, 1], 'b-', linewidth=2, label='Projected Rectangle Outline')
-        ax.plot(data['box_x_mm'], data['box_y_mm'], 'k--', linewidth=2, label=f"Realistic Sensor FOV ({data['aspect_ratio_used']})")
-        ax.scatter(0, 0, color='red', s=200, marker='+', linewidth=3, label='Optical Axis (Principal Point)')
-        ax.scatter(data['ellipse_cx'], data['ellipse_cy'], color='purple', s=100, marker='x', linewidth=2, label='Water Spot Center')
+        # Coverage overlay for FOV mode: paint outside area red, inside FOV green
+        try:
+            active_tab = self.param_notebook.tab(self.param_notebook.select(), "text")
+        except Exception:
+            active_tab = "IFOVBased"
+        if active_tab == "FOVBased":
+            from matplotlib.patches import Polygon
+            # Fill projected water ellipse lightly red
+            ell = data['proj_ellipse_pts']
+            ax.fill(ell[:,0], ell[:,1], color=(1,0.6,0.6,0.25), label='Water Area')
+            
+            # In FOV mode, project the LIMITING FACTOR (sensor or image circle) to water plane
+            # then forward-project back to sensor view
+            if data.get('mode','IFOV')=='FOV':
+                try:
+                    # Get sensor and image circle dimensions
+                    sensor_w = data.get('sensor_width_mm', 0)
+                    sensor_h = data.get('sensor_height_mm', 0)
+                    img_circle = data.get('image_circle_mm', 0)
+                    
+                    # Determine limiting factor
+                    sensor_diagonal = np.sqrt(sensor_w**2 + sensor_h**2)
+                    is_circle_limiting = img_circle > 0 and img_circle < sensor_diagonal
+                    
+                    # Get camera parameters for projection (same as projection_calculations.py)
+                    A = data.get('A')
+                    B = data.get('B')
+                    C = data.get('C')
+                    theta_deg = data.get('theta_deg')
+                    shift_axis = data.get('shift_axis', 'Y')
+                    shift = data.get('shift', 0)
+                    margin_percent = data.get('margin_percent', 0)
+                    theta = np.deg2rad(theta_deg)
+                    
+                    # Apply margin factor (same as projection_calculations.py)
+                    margin_factor = 1.0 + (margin_percent / 100.0)
+                    H = A
+                    L = B * margin_factor
+                    W = C * margin_factor
+                    
+                    # Camera position (same as projection_calculations.py)
+                    if shift_axis == 'X':
+                        cam_pos = np.array([W/2 + shift, 0, H])
+                    else:
+                        cam_pos = np.array([0, L/2 + shift, H])
+                    
+                    # Camera orientation
+                    initial_optical_axis = np.array([0, 0, -1])
+                    if shift_axis == 'X':
+                        Ry = np.array([[np.cos(theta), 0, np.sin(theta)], [0, 1, 0], [-np.sin(theta), 0, np.cos(theta)]])
+                        z_cam = Ry @ initial_optical_axis
+                    else:
+                        theta_corrected = -theta
+                        Rx = np.array([[1, 0, 0], [0, np.cos(theta_corrected), -np.sin(theta_corrected)], [0, np.sin(theta_corrected), np.cos(theta_corrected)]])
+                        z_cam = Rx @ initial_optical_axis
+                    z_cam = z_cam / np.linalg.norm(z_cam)
+                    
+                    # Camera basis
+                    if abs(np.dot(z_cam, [0, 1, 0])) > 0.99:
+                        up_guess = np.array([1, 0, 0])
+                    else:
+                        up_guess = np.array([0, 1, 0])
+                    x_cam = np.cross(up_guess, z_cam)
+                    x_cam = x_cam / np.linalg.norm(x_cam)
+                    y_cam = np.cross(z_cam, x_cam)
+                    y_cam = y_cam / np.linalg.norm(y_cam)
+                    
+                    # Use fov_polygon_world which already contains the correct back-projected footprint
+                    # (it was computed with the limiting factor applied)
+                    fov_polygon_world = data.get('fov_polygon_world')
+                    if fov_polygon_world and len(fov_polygon_world) >= 3:
+                        # Forward-project the water plane footprint to sensor view
+                        proj_polygon = []
+                        for pt in fov_polygon_world:
+                            p_world = np.array([pt[0], pt[1], 0])
+                            v = p_world - cam_pos
+                            Xc = np.dot(v, x_cam)
+                            Yc = np.dot(v, y_cam)
+                            Zc = np.dot(v, z_cam)
+                            if abs(Zc) > 1e-10:
+                                x_img = H * Xc / Zc
+                                y_img = H * Yc / Zc
+                                proj_polygon.append([x_img, y_img])
+                        
+                        if len(proj_polygon) >= 3:
+                            proj_arr = np.array(proj_polygon)
+                            # Close the polygon properly
+                            poly_x = np.append(proj_arr[:, 0], proj_arr[0, 0])
+                            poly_y = np.append(proj_arr[:, 1], proj_arr[0, 1])
+                            # Draw with higher zorder to ensure visibility
+                            ax.fill(poly_x, poly_y, color=(0, 1, 0, 0.25), label='Camera FOV (tile)', zorder=5)
+                            ax.plot(poly_x, poly_y, color='g', alpha=0.9, linewidth=2.5, label='_nolegend_', zorder=5)
+                except Exception as e:
+                    print(f"Error drawing FOV overlay: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    
+        ax.plot(data['proj_ellipse_pts'][:, 0], data['proj_ellipse_pts'][:, 1], 'r-', linewidth=2, label='Water Ellipse')
+        ax.plot(data['proj_rect_outline'][:, 0], data['proj_rect_outline'][:, 1], 'b-', linewidth=2, label='Water Rectangle')
+        ax.scatter(0, 0, color='red', s=200, marker='+', linewidth=3, label='_nolegend_')
+        ax.scatter(data['ellipse_cx'], data['ellipse_cy'], color='purple', s=100, marker='x', linewidth=2, label='_nolegend_')
         ax.axhline(y=0, color='red', linestyle='-', alpha=0.3, linewidth=1)
         ax.axvline(x=0, color='red', linestyle='-', alpha=0.3, linewidth=1)
         from matplotlib.patches import Circle
-        ax.add_patch(Circle((0, 0), data['optics_radius'], fill=False, color='black', lw=2, label=f"Optics Image Size (D={data['optics_diameter']:.1f} mm)"))
+        ax.add_patch(Circle((0, 0), data['optics_radius'], fill=False, color='black', lw=2, label=f"Optics (D={data['optics_diameter']:.1f}mm)"))
 
         # Set view limits based on optical diameter with 10% margin
         max_dim = data['optics_radius'] * 1.1  # 1.1 times the optical radius
-        ax.set_xlim([-max_dim, max_dim])
-        ax.set_ylim([-max_dim, max_dim])
+        
+        # Flip ON: flip all data AND de-flip axis coordinate values (double inversion = normal coords)
+        # Flip OFF: flip only axis coordinate values (projection flips image, so compensate axis labels)
+        if self.flip_image_plane_var.get():
+            # Flip the data and de-flip axes = normal coordinate values
+            ax.set_xlim([-max_dim, max_dim])
+            ax.set_ylim([-max_dim, max_dim])
+            ax.invert_xaxis()
+            ax.invert_yaxis()
+        else:
+            # Flip only axis coordinate values - projection data stays as-is but axis labels are inverted
+            ax.set_xlim([max_dim, -max_dim])
+            ax.set_ylim([max_dim, -max_dim])
         ax.set_xlabel('World X [mm] (projected)', fontsize=14)
         ax.set_ylabel('World Y [mm] (projected)', fontsize=14)
-        ax.set_title(f"Projected View - REALISTIC SENSOR {data['aspect_ratio_used']} (User: {data['theta_deg']:.1f}°, Optimal: {data['optimal_angle']:.1f}°)", fontsize=14)
+        ax.set_title(f"Image Plane (Camera) - Top View (Tile: {data['aspect_ratio_used']}, User: {data['theta_deg']:.1f}°, Optimal: {data['optimal_angle']:.1f}°)", fontsize=14)
         ax.tick_params(axis='both', labelsize=12)
-        ax.legend(loc='best', fontsize=10)
+        ax.legend(loc='upper right', fontsize=9, framealpha=0.9)
         ax.grid(True, alpha=0.3)
+
+    def _compute_fov_polygon(self, params, nx=1, ny=1):
+        """Back-project ONE TILE's sensor rectangle corners to water plane (Z=0) to form FOV polygon in world mm.
+        Each tile has its own lens, so projection view always shows a single tile's FOV."""
+        A = float(params.get('A', 133))
+        B = float(params.get('B', 317.5))
+        C = float(params.get('C', 266.7))
+        margin_percent = float(params.get('Margin', 10.0))
+        tilt_deg = float(params.get('Tilt', 30))
+        theta = np.deg2rad(tilt_deg)
+        shift = float(params.get('Shift', 0))
+        shift_axis = params.get('ShiftAxis','X')
+        
+        # Apply margin factor to match projection_calculations.py
+        margin_factor = 1.0 + (margin_percent / 100.0)
+        B = B * margin_factor
+        C = C * margin_factor
+        pixel_pitch_mm = float(params.get('PixelPitch', 2.0))/1000.0
+        
+        # Get FULL sensor dimensions first
+        total_px_x = int(params.get('SensorPixelsX', 1920))
+        total_px_y = int(params.get('SensorPixelsY', 1080))
+        Sw_full = pixel_pitch_mm * total_px_x
+        Sh_full = pixel_pitch_mm * total_px_y
+        
+        # Apply Image Circle constraint to effective full sensor
+        img_circle_mm = max(0.0, float(params.get('ImageCircle', 0.0)))
+        if img_circle_mm > 0.0:
+            Sw_effective = min(Sw_full, img_circle_mm)
+            Sh_effective = min(Sh_full, img_circle_mm)
+        else:
+            Sw_effective = Sw_full
+            Sh_effective = Sh_full
+        
+        # Now compute PER-TILE dimensions (each tile has its own lens!)
+        # For 1x1: tile = full sensor; for 2x2: tile = 1/4 of sensor (minus dead zones)
+        deadzone_mm = float(params.get('Dead zone [mm]:', 0.0))
+        deadzone_px = int(round(deadzone_mm / pixel_pitch_mm)) if pixel_pitch_mm > 0 else 0
+        
+        eff_px_x = int(Sw_effective / pixel_pitch_mm)
+        eff_px_y = int(Sh_effective / pixel_pitch_mm)
+        usable_px_x = max(eff_px_x - (nx - 1) * deadzone_px, 0)
+        usable_px_y = max(eff_px_y - (ny - 1) * deadzone_px, 0)
+        tile_px_x = usable_px_x // nx if nx > 0 else usable_px_x
+        tile_px_y = usable_px_y // ny if ny > 0 else usable_px_y
+        
+        # TILE dimensions in mm (this is what one lens sees!)
+        Sw = pixel_pitch_mm * tile_px_x
+        Sh = pixel_pitch_mm * tile_px_y
+        
+        f = max(float(params.get('FocalLength', 6.0)), 1e-6)
+        # Camera center
+        if shift_axis=='X':
+            Xc = C/2 + shift
+            Yc = 0.0
+            # Rotate around Y
+            Ry = np.array([[np.cos(theta), 0, np.sin(theta)], [0,1,0], [-np.sin(theta),0,np.cos(theta)]])
+            z_cam = Ry @ np.array([0,0,-1])
+        else:
+            Xc = 0.0
+            Yc = B/2 + shift
+            # Rotate around X - negate theta for Y-axis to match projection_calculations.py
+            theta_corrected = -theta
+            Rx = np.array([[1,0,0],[0,np.cos(theta_corrected),-np.sin(theta_corrected)],[0,np.sin(theta_corrected),np.cos(theta_corrected)]])
+            z_cam = Rx @ np.array([0,0,-1])
+        z_cam = z_cam/np.linalg.norm(z_cam)
+        up_guess = np.array([0,1,0]) if abs(np.dot(z_cam,[0,1,0]))<0.99 else np.array([1,0,0])
+        x_cam = np.cross(up_guess, z_cam); x_cam = x_cam/np.linalg.norm(x_cam)
+        y_cam = np.cross(z_cam, x_cam); y_cam = y_cam/np.linalg.norm(y_cam)
+        Cw = np.array([Xc, Yc, A])
+        # Determine shape to back-project: circle if Image Circle is limiting, else rectangle
+        if img_circle_mm > 0.0:
+            sensor_diagonal = np.sqrt(Sw_full**2 + Sh_full**2)
+            if img_circle_mm < sensor_diagonal:
+                # Image Circle is limiting - back-project circle points
+                radius = img_circle_mm / 2.0
+                n_points = 64  # Circle resolution
+                angles = np.linspace(0, 2*np.pi, n_points, endpoint=True)
+                circle_points = np.column_stack([radius * np.cos(angles), radius * np.sin(angles)])
+            else:
+                # Sensor is limiting - back-project rectangle corners
+                circle_points = np.array([[-Sw/2,-Sh/2],[Sw/2,-Sh/2],[Sw/2,Sh/2],[-Sw/2,Sh/2]])
+        else:
+            # No Image Circle - back-project rectangle corners
+            circle_points = np.array([[-Sw/2,-Sh/2],[Sw/2,-Sh/2],[Sw/2,Sh/2],[-Sw/2,Sh/2]])
+        
+        # Back-project to water plane
+        poly = []
+        for x_img_mm, y_img_mm in circle_points:
+            r_cam = np.array([x_img_mm, y_img_mm, f])
+            r_cam = r_cam/np.linalg.norm(r_cam)
+            Rw = x_cam*r_cam[0] + y_cam*r_cam[1] + z_cam*r_cam[2]
+            if abs(Rw[2])<1e-9:
+                t=0
+            else:
+                t = -Cw[2]/Rw[2]
+            Pw = Cw + t*Rw
+            poly.append([Pw[0], Pw[1]])
+        return poly
+
+    def _compute_tile_fov_polygon(self, params, nx=1, ny=1, tile_ix=0, tile_iy=0, pixels_x_per_tile=None, pixels_y_per_tile=None):
+        """Compute FOV polygon for a single sensor tile back-projected to water plane.
+        If 1x1, returns full sensor polygon. Tiles are arranged across the sensor surface.
+        """
+        A = float(params.get('A', 133))
+        B = float(params.get('B', 317.5))
+        C = float(params.get('C', 266.7))
+        tilt_deg = float(params.get('Tilt', 30))
+        theta = np.deg2rad(tilt_deg)
+        shift = float(params.get('Shift', 0))
+        shift_axis = params.get('ShiftAxis','X')
+        pixel_pitch_mm = float(params.get('PixelPitch', 2.0))/1000.0
+        total_px_x = int(params.get('SensorPixelsX', 1920))
+        total_px_y = int(params.get('SensorPixelsY', 1080))
+        
+        # Apply Image Circle constraint to effective dimensions
+        total_w_full = pixel_pitch_mm * total_px_x
+        total_h_full = pixel_pitch_mm * total_px_y
+        img_circle_mm = max(0.0, float(params.get('ImageCircle', 0.0)))
+        if img_circle_mm > 0.0:
+            total_w = min(total_w_full, img_circle_mm)
+            total_h = min(total_h_full, img_circle_mm)
+        else:
+            total_w = total_w_full
+            total_h = total_h_full
+        
+        # Use provided per-tile pixels when available
+        if pixels_x_per_tile is None:
+            # Compute effective pixels and split by tiles
+            eff_px_x = int(total_w / pixel_pitch_mm)
+            pixels_x_per_tile = max(eff_px_x // max(nx,1), 1)
+        if pixels_y_per_tile is None:
+            eff_px_y = int(total_h / pixel_pitch_mm)
+            pixels_y_per_tile = max(eff_px_y // max(ny,1), 1)
+        tile_w = pixel_pitch_mm * pixels_x_per_tile
+        tile_h = pixel_pitch_mm * pixels_y_per_tile
+        # Tile indices: 0..nx-1, 0..ny-1
+        ix = int(tile_ix)
+        iy = int(tile_iy)
+        # Center of the tile in sensor mm
+        cx = -total_w/2 + (ix + 0.5) * (total_w / max(nx,1))
+        cy = -total_h/2 + (iy + 0.5) * (total_h / max(ny,1))
+        f = max(float(params.get('FocalLength', 6.0)), 1e-6)
+        # Camera center and orientation
+        if shift_axis=='X':
+            Xc = C/2 + shift
+            Yc = 0.0
+            Ry = np.array([[np.cos(theta), 0, np.sin(theta)], [0,1,0], [-np.sin(theta),0,np.cos(theta)]])
+            z_cam = Ry @ np.array([0,0,-1])
+        else:
+            Xc = 0.0
+            Yc = B/2 + shift
+            # Rotate around X - negate theta for Y-axis to match projection_calculations.py
+            theta_corrected = -theta
+            Rx = np.array([[1,0,0],[0,np.cos(theta_corrected),-np.sin(theta_corrected)],[0,np.sin(theta_corrected),np.cos(theta_corrected)]])
+            z_cam = Rx @ np.array([0,0,-1])
+        z_cam = z_cam/np.linalg.norm(z_cam)
+        up_guess = np.array([0,1,0]) if abs(np.dot(z_cam,[0,1,0]))<0.99 else np.array([1,0,0])
+        x_cam = np.cross(up_guess, z_cam); x_cam = x_cam/np.linalg.norm(x_cam)
+        y_cam = np.cross(z_cam, x_cam); y_cam = y_cam/np.linalg.norm(y_cam)
+        Cw = np.array([Xc, Yc, A])
+        # Tile corners in sensor mm relative to sensor center, offset by tile center
+        corners = np.array([[-tile_w/2,-tile_h/2],[tile_w/2,-tile_h/2],[tile_w/2,tile_h/2],[-tile_w/2,tile_h/2]])
+        corners += np.array([cx, cy])
+        poly = []
+        for x_img_mm,y_img_mm in corners:
+            r_cam = np.array([x_img_mm, y_img_mm, f])
+            r_cam = r_cam/np.linalg.norm(r_cam)
+            Rw = x_cam*r_cam[0] + y_cam*r_cam[1] + z_cam*r_cam[2]
+            t = -Cw[2]/Rw[2] if abs(Rw[2])>=1e-9 else 0.0
+            Pw = Cw + t*Rw
+            poly.append([Pw[0], Pw[1]])
+        return poly
+    def _estimate_fov_coverage(self, params, fov_poly):
+        """Estimate coverage percent as area(FOV∩water)/area(water) by sampling the water rectangle."""
+        B = float(params.get('B', 317.5))
+        Cw = float(params.get('C', 266.7))
+        margin = float(params.get('Margin', 10))
+        W = Cw*(1+margin/100.0)
+        L = B*(1+margin/100.0)
+        x_min, x_max = -W/2, W/2
+        y_min, y_max = -L/2, L/2
+        nx, ny = 120, 120
+        xs = np.linspace(x_min, x_max, nx)
+        ys = np.linspace(y_min, y_max, ny)
+        area_cell = ((x_max-x_min)/(nx-1))*((y_max-y_min)/(ny-1))
+        inside = 0
+        total = nx*ny
+        def point_in_poly(x,y,poly):
+            wn=0
+            for i in range(len(poly)):
+                x1,y1 = poly[i]
+                x2,y2 = poly[(i+1)%len(poly)]
+                if y1<=y:
+                    if y2>y and (x2-x1)*(y-y1)-(x-x1)*(y2-y1)>0:
+                        wn+=1
+                else:
+                    if y2<=y and (x2-x1)*(y-y1)-(x-x1)*(y2-y1)<0:
+                        wn-=1
+            return wn!=0
+        for xi in xs:
+            for yi in ys:
+                if point_in_poly(xi, yi, fov_poly):
+                    inside+=1
+        water_area = (x_max-x_min)*(y_max-y_min)
+        est_inside_area = inside*area_cell
+        return max(min(est_inside_area/water_area*100.0, 100.0), 0.0)
 
 
     def plot_side_view(self, data):
@@ -832,9 +1648,15 @@ B - Water Spot Length: Length of the water surface area
 C - Water Spot Width: Width of the water surface area
 Camera Tilt: Angle of the camera relative to the vertical axis
 Margin: Additional area percentage around the water spot
-Resolution: Target resolution in mm/pixel
+Resolution: Target resolution in mm/pixel (IFOV mode only)
 Dead zone: Gap between sensor tiles in multi-sensor configurations
 Pixel pitch: Physical size of sensor pixels in micrometers
+Focal Length: Lens focal length in millimeters (FOV mode only)
+Sensor Resolution: Physical pixel dimensions of the sensor (FOV mode only)
+Image Circle: Diameter of the lens's usable image circle in millimeters
+  • Limits the effective sensor area that receives light from the lens
+  • If smaller than sensor diagonal, outer pixels will be dark/vignetted
+  • For optimal sensor utilization, Image Circle ≥ sensor diagonal
             """),
             
             ("Calculations in Detail", """
@@ -878,18 +1700,45 @@ Coverage View:
 • Zoom controls for detailed analysis
             """),
             
+            ("Understanding Output Metrics", """
+1. Active Pixel Fraction (by Image Circle):
+   • Measures: Percentage of sensor area that receives light from the lens
+   • Limited by: Lens optics (Image Circle diameter)
+   • Formula: (Image Circle Area) / (Sensor Area) × 100%
+   • Impact: Hardware/optical limitation - pixels outside the circle are unused
+   • Good value: ~100% (lens fully illuminates sensor)
+   • Example: 1.4mm Image Circle on 5.4mm sensor = 7% (93% wasted pixels!)
+
+2. Water Coverage (from graph):
+   • Measures: Percentage of water spot visible within camera FOV
+   • Limited by: Camera geometry (position, tilt, height)
+   • Calculation: Camera FOV footprint vs. water rectangle dimensions
+   • Impact: Geometric/positioning issue - affects target visibility
+   • Good value: >80% (most of target area visible)
+   • Can be improved by: Adjusting camera placement or tilt angle
+
+3. Key Difference:
+   Active Pixel Fraction = Lens-to-Sensor fit (optical hardware match)
+   Water Coverage = Camera-to-Scene geometry (positioning/alignment)
+   Both can limit system performance independently!
+            """),
+            
             ("Advanced Features", """
-1. IFOV Enforcement:
+1. Dual Mode Operation:
+   • IFOV Mode: Design sensor based on required resolution (mm/pixel)
+   • FOV Mode: Analyze existing sensor/lens combination performance
+
+2. IFOV Enforcement:
    • Toggle visualization of resolution compliance
    • Real-time feedback on sensor coverage
 
-2. Camera Setup Options:
+3. Camera Setup Options:
    • Single sensor (1x1)
    • Dual sensor (1x2, 2x1)
    • Quad sensor (2x2)
    • Automatic dead zone handling
 
-3. Database Management:
+4. Database Management:
    • Save and load toilet configurations
    • Compare different setups
    • Export data to CSV
@@ -1012,8 +1861,12 @@ Coverage View:
             'Margin [%]': params['Margin'],
             'Shift from Water Spot Width Edge [mm]': params['Shift'],
             'Shift Axis': params['ShiftAxis'],
+            'Dead Zone [mm]': params.get('DeadZone',''),
             'Required Resolution [mm/px]': params['Resolution'],
             'Pixel Pitch [um]': params['PixelPitch'],
+            'Focal Length [mm]': params.get('FocalLength', ''),
+            'Sensor Resolution [px×px]': f"{params.get('SensorPixelsX','')}x{params.get('SensorPixelsY','')}" if params.get('Mode')=='FOV' else '',
+            'Image Circle [mm]': params.get('ImageCircle',''),
         }
         if self.is_duplicate_record(toilet_params):
             messagebox.showwarning("Duplicate Entry", "These parameters already exist in the database. "
@@ -1035,8 +1888,12 @@ Coverage View:
             'Margin [%]',
             'Shift from Water Spot Width Edge [mm]',
             'Shift Axis',
+            'Dead Zone [mm]',
             'Required Resolution [mm/px]',
-            'Pixel Pitch [um]'
+            'Pixel Pitch [um]',
+            'Focal Length [mm]',
+            'Sensor Resolution [px×px]',
+            'Image Circle [mm]'
         ]
         
         for index, row in self.data_manager.data.iterrows():
@@ -1067,24 +1924,58 @@ Coverage View:
         item = self.tree.item(selection[0])
         values = item['values']
         if len(values) >= 12:
-            self.entries['A'].delete(0, tk.END)
-            self.entries['A'].insert(0, str(values[3]))
-            self.entries['B'].delete(0, tk.END)
-            self.entries['B'].insert(0, str(values[4]))
-            self.entries['C'].delete(0, tk.END)
-            self.entries['C'].insert(0, str(values[5]))
-            self.entries['Tilt'].delete(0, tk.END)
-            self.entries['Tilt'].insert(0, str(values[6]))
-            self.entries['Margin'].delete(0, tk.END)
-            self.entries['Margin'].insert(0, str(values[7]))
-            self.entries['Shift'].delete(0, tk.END)
-            self.entries['Shift'].insert(0, str(values[8]))
-            self.shift_axis_var.set(str(values[9]))
-            self.entries['Resolution'].delete(0, tk.END)
-            self.entries['Resolution'].insert(0, str(values[10]))
-            if len(values) > 11:
-                self.entries['PixelPitch'].delete(0, tk.END)
-                self.entries['PixelPitch'].insert(0, str(values[11]))
+            cols = list(self.tree['columns'])
+            def set_ifov(key, col_name):
+                if col_name in cols:
+                    idx = cols.index(col_name)
+                    self.entries[key].delete(0, tk.END)
+                    self.entries[key].insert(0, str(values[idx]))
+            def set_fov(label_text, col_name):
+                if hasattr(self, 'fov_entries') and label_text in self.fov_entries and col_name in cols:
+                    idx = cols.index(col_name)
+                    e = self.fov_entries[label_text]
+                    e.delete(0, tk.END)
+                    e.insert(0, str(values[idx]))
+            # IFOV tab fields
+            set_ifov('A', 'A - Rim to Water depth (camera height) [mm]')
+            set_ifov('B', 'B - Water Spot Length [mm]')
+            set_ifov('C', 'C - Water Spot Width [mm]')
+            set_ifov('Tilt', 'Camera Tilt [degrees]')
+            set_ifov('Margin', 'Margin [%]')
+            set_ifov('Shift', 'Shift from Water Spot Width Edge [mm]')
+            if 'Shift Axis' in cols:
+                self.shift_axis_var.set(str(values[cols.index('Shift Axis')]))
+            set_ifov('Resolution', 'Required Resolution [mm/px]')
+            set_ifov('PixelPitch', 'Pixel Pitch [um]')
+            if 'Dead Zone [mm]' in cols:
+                dz_val = str(values[cols.index('Dead Zone [mm]')])
+                self.entries['DeadZone'].delete(0, tk.END)
+                self.entries['DeadZone'].insert(0, dz_val)
+            # FOV tab fields mirror
+            set_fov('A - Rim to Water depth (camera height) [mm]:', 'A - Rim to Water depth (camera height) [mm]')
+            set_fov('B - Water Spot Length [mm]:', 'B - Water Spot Length [mm]')
+            set_fov('C - Water Spot Width [mm]:', 'C - Water Spot Width [mm]')
+            set_fov('Camera Tilt [degrees]:', 'Camera Tilt [degrees]')
+            set_fov('Margin [%]:', 'Margin [%]')
+            set_fov('Shift from Water Spot Width Edge [mm]:', 'Shift from Water Spot Width Edge [mm]')
+            set_fov('Dead zone [mm]:', 'Dead Zone [mm]')
+            set_fov('Pixel pitch [um]:', 'Pixel Pitch [um]')
+            # Image Circle
+            if 'Image Circle [mm]' in cols:
+                idx = cols.index('Image Circle [mm]')
+                self.image_circle_entry_ifov.delete(0, tk.END)
+                self.image_circle_entry_ifov.insert(0, str(values[idx]))
+                self.image_circle_entry_fov.delete(0, tk.END)
+                self.image_circle_entry_fov.insert(0, str(values[idx]))
+            # FOV-specific fields
+            if 'Focal Length [mm]' in cols:
+                idx = cols.index('Focal Length [mm]')
+                self.focal_length_entry.delete(0, tk.END)
+                self.focal_length_entry.insert(0, str(values[idx]))
+            if 'Sensor Resolution [px×px]' in cols:
+                idx = cols.index('Sensor Resolution [px×px]')
+                self.sensor_res_entry.delete(0, tk.END)
+                self.sensor_res_entry.insert(0, str(values[idx]))
             self.plot_projection()
 
     def delete_selected_toilet(self):
@@ -1140,8 +2031,12 @@ def ensure_single_instance():
                 # Current process, continue
                 pass
             elif psutil.pid_exists(pid):
-                logging.error("Another instance of the application is already running.")
-                sys.exit(1)
+                # Be forgiving in dev: warn but continue by replacing lockfile
+                logging.warning("Another instance appears running (pid=%s). Continuing by replacing lockfile.", pid)
+                try:
+                    os.remove(LOCKFILE)
+                except Exception:
+                    pass
             else:
                 # Stale lockfile (process not running), remove it
                 os.remove(LOCKFILE)
@@ -1165,6 +2060,9 @@ if __name__ == "__main__":
     ensure_single_instance()
     root = tk.Tk()
     app = ProjectionApp(root)
+    # Maximize window after everything is initialized
+    root.update_idletasks()
+    root.state('zoomed')
     try:
         root.mainloop()
     finally:
