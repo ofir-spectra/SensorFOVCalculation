@@ -414,26 +414,60 @@ class ProjectionApp:
         # Calculate distances and IFOV considering perspective distortion
         tilt_rad = np.radians(params.get("Tilt", 30))
         height = params.get("A", 133)  # Camera height in mm
-        
-        if tilt_rad == 0:
-            initial_min_ifov = target_ifov
-            initial_max_ifov = target_ifov
-        else:
-            # For tilted camera, calculate perspective-affected distances
-            min_distance = height * np.tan(tilt_rad)  # Closest point to camera
-            max_distance = height / np.cos(tilt_rad)  # Farthest point
-            distance_ratio = max_distance / min_distance
-            
-            # Calculate IFOV considering perspective effects
-            initial_max_ifov = target_ifov * distance_ratio
-            initial_min_ifov = target_ifov / distance_ratio
+        shift_axis = params.get("ShiftAxis", "Y")
+        shift = params.get("Shift", 0.0)
 
-        # Step 3: Calculate resolution requirements
         # Apply margin to the dimensions
         margin_percent = params.get('Margin', 10)
         margin_factor = 1.0 + (margin_percent / 100.0)
         scaled_width = params['C'] * margin_factor  # Water spot width with margin
         scaled_length = params['B'] * margin_factor  # Water spot length with margin
+
+        # Camera position based on shift axis
+        if shift_axis == 'X':
+            cam_pos = np.array([scaled_width / 2 + shift, 0.0, height])
+        else:
+            cam_pos = np.array([0.0, scaled_length / 2 + shift, height])
+
+        # Camera optical axis (unit vector)
+        initial_optical_axis = np.array([0.0, 0.0, -1.0])
+        if shift_axis == 'X':
+            Ry = np.array([
+                [np.cos(tilt_rad), 0.0, np.sin(tilt_rad)],
+                [0.0, 1.0, 0.0],
+                [-np.sin(tilt_rad), 0.0, np.cos(tilt_rad)]
+            ])
+            z_cam = Ry @ initial_optical_axis
+        else:
+            Rx = np.array([
+                [1.0, 0.0, 0.0],
+                [0.0, np.cos(-tilt_rad), -np.sin(-tilt_rad)],
+                [0.0, np.sin(-tilt_rad), np.cos(-tilt_rad)]
+            ])
+            z_cam = Rx @ initial_optical_axis
+        z_cam = z_cam / max(np.linalg.norm(z_cam), 1e-9)
+
+        # Compute depth along optical axis to water spot corners
+        corners = np.array([
+            [-scaled_width / 2, -scaled_length / 2, 0.0],
+            [ scaled_width / 2, -scaled_length / 2, 0.0],
+            [ scaled_width / 2,  scaled_length / 2, 0.0],
+            [-scaled_width / 2,  scaled_length / 2, 0.0],
+        ])
+        zc_values = [np.dot(p - cam_pos, z_cam) for p in corners]
+        zc_values = [z for z in zc_values if z > 1e-6]
+        if zc_values:
+            min_zc = min(zc_values)
+            max_zc = max(zc_values)
+            distance_ratio = max_zc / min_zc if min_zc > 0 else 1.0
+        else:
+            distance_ratio = 1.0
+
+        # Calculate IFOV considering perspective effects
+        initial_max_ifov = target_ifov * distance_ratio
+        initial_min_ifov = target_ifov / distance_ratio
+
+        # Step 3: Calculate resolution requirements
 
         # Fix axes alignment - X should use width (C), Y should use length (B)
         naive_pixels_x = int(scaled_width / target_ifov)  # X corresponds to water spot width (C)
@@ -829,23 +863,40 @@ Dead zone: Gap between sensor tiles in multi-sensor configurations
 Pixel pitch: Physical size of sensor pixels in micrometers
             """),
             
-            ("Calculations in Detail", """
-1. IFOV Calculations:
-   • Basic IFOV = pixel_pitch × (working_distance / focal_length)
-   • Perspective-corrected IFOV considers camera tilt:
-     - Minimum IFOV at closest point = base_IFOV / distance_ratio
-     - Maximum IFOV at farthest point = base_IFOV × distance_ratio
-     where distance_ratio = max_distance / min_distance
+                ("Calculations in Detail", """
+1. Geometry and IFOV mapping (pinhole model):
+    - margin_factor = 1 + Margin/100
+    - W = C * margin_factor, L = B * margin_factor
+    - Camera position:
+      * ShiftAxis = X: cam = (W/2 + Shift, 0, A)
+      * ShiftAxis = Y: cam = (0, L/2 + Shift, A)
+    - Optical axis (unit):
+      * ShiftAxis = X: z_cam = Ry(theta) * [0, 0, -1]
+      * ShiftAxis = Y: z_cam = Rx(-theta) * [0, 0, -1]
+    - For each water corner p in {(+-W/2, +-L/2, 0)}:
+      Zc_i = dot(p - cam, z_cam)
+      min_zc = min(Zc_i), max_zc = max(Zc_i)
+      distance_ratio = max_zc / min_zc
 
-2. Resolution Calculations:
-   • Naive resolution = area_dimension / target_IFOV
-   • Required resolution includes perspective effects:
-     required_pixels = naive_pixels × (max_IFOV / target_IFOV)
+2. IFOV scaling:
+    - target_ifov = user required mm/px
+    - initial_min_ifov = target_ifov / distance_ratio
+    - initial_max_ifov = target_ifov * distance_ratio
 
-3. Multi-sensor Considerations:
-   • Total pixels = n × pixels_per_tile + (n-1) × deadzone_pixels
-   • Physical sensor size = pixel_pitch × total_pixels
-            """),
+3. Resolution:
+    - naive_pixels_x = W / target_ifov
+    - naive_pixels_y = L / target_ifov
+    - required_pixels_x = naive_pixels_x * distance_ratio
+    - required_pixels_y = naive_pixels_y * distance_ratio
+
+4. Tile limits and dead zones:
+    - max_pixels_per_tile = (MaxSensorRes - (n-1)*deadzone_px) / n
+    - If required > max, scale both axes by scaling_ratio
+    - total_pixels = n * pixels_per_tile + (n-1) * deadzone_px
+
+5. IFOV overlay coloring:
+    - point_ifov = min_ifov + (max_ifov - min_ifov) * (d / max_radius)
+                """),
             
             ("Visualization Guide", """
 Top-Down View:
