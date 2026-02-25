@@ -1,7 +1,7 @@
 import os
 import subprocess
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from tkinter.font import Font
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
@@ -14,6 +14,7 @@ import sys
 
 from projection_calculations import get_plot_data
 from data_manager import ToiletDataManager
+from pdf_report_generator import generate_pdf_report
 import logging
 import colorsys
 from image_utils import find_image_case_insensitive
@@ -88,6 +89,12 @@ class ProjectionApp:
         
         title_label = tk.Label(top_frame, text=f"SENSOR SIMULATION v{APP_VERSION} ({APP_BUILD}) ({APP_BRANCH})", font=("Arial", 20, "bold"))
         title_label.pack(side=tk.LEFT, padx=(10, 0))
+        
+        # Add report button
+        report_button = tk.Button(top_frame, text="📄 REPORT", font=("Arial", 12, "bold"), 
+                              command=self.generate_report, width=12, height=1,
+                              bg='#FFD700', fg='black')
+        report_button.pack(side=tk.RIGHT, padx=5)
         
         # Add help button
         help_button = tk.Button(top_frame, text="?", font=("Arial", 16, "bold"), 
@@ -1858,6 +1865,42 @@ class ProjectionApp:
         ax.legend(loc='upper left', fontsize=GRAPH_LEGEND_FONTSIZE)
         ax.grid(True, alpha=0.3)
         
+
+    def generate_report(self):
+        """Generate a PDF report with current parameters from both tabs"""
+        try:
+            params = self.get_current_parameters()
+            if params is None:
+                messagebox.showerror("Error", "Please ensure all parameters are valid numeric values")
+                return
+            
+            # Create default filename with parameters
+            mode = params.get('Mode', 'FOV')
+            A = int(params.get('A', 146))
+            timestamp = __import__('datetime').datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_filename = f"IFOV_Report_{mode}_{A}mm_{timestamp}.pdf"
+            
+            # Ask user where to save
+            output_path = filedialog.asksaveasfilename(
+                defaultextension=".pdf",
+                initialfile=default_filename,
+                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+                title="Save Report As"
+            )
+            
+            if not output_path:
+                return  # User cancelled
+            
+            # Generate the PDF
+            success, filename, message = generate_pdf_report(params, output_path)
+            
+            if success:
+                messagebox.showinfo("Success", message)
+            else:
+                messagebox.showerror("Error", message)
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to generate report: {str(e)}")
 
     def show_help(self):
         """Show comprehensive help information in a new window"""
