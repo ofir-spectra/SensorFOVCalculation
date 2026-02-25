@@ -570,10 +570,11 @@ elements.append(Paragraph("6.1 FOV Mode Results", subheading_style))
 fov_results_data = [
     ["Metric", "Value", "Unit"],
     ["Focal Length", f"{focal_length}", "mm"],
-    ["Sensor Size", f"{sensor_width_mm:.3f} × {sensor_height_mm:.3f}", "mm"],
+    ["Sensor Pixels (X×Y)", f"{sensor_px_x} × {sensor_px_y}", "pixels"],
+    ["Sensor Size (W×H)", f"{sensor_width_mm:.3f} × {sensor_height_mm:.3f}", "mm"],
     ["Field of View (H×V)", f"{fov_h_deg:.2f}° × {fov_v_deg:.2f}°", "degrees"],
-    ["Effective IFOV (linear)", f"{ifov_eff_mm:.5f}", "mm"],
-    ["Effective IFOV (angular)", f"{ifov_eff_mrad:.4f}", "mrad"],
+    ["IFOV (linear)", f"{ifov_eff_mm:.5f}", "mm"],
+    ["IFOV (angular)", f"{ifov_eff_mrad:.4f}", "mrad"],
     ["Pixel Pitch", f"{pixel_pitch_um}", "μm"],
     ["Camera Height", f"{A}", "mm"],
 ]
@@ -609,11 +610,12 @@ fov_v_ifov = 2 * np.degrees(np.arctan(height_ifov_mm / (2 * focal_length)))
 ifov_results_data = [
     ["Metric", "Value", "Unit"],
     ["Required Resolution", "0.22", "mm/px"],
+    ["Required Pixels (X×Y)", f"{int(pixels_x_ifov)} × {int(pixels_y_ifov)}", "pixels"],
+    ["Sensor Size (W×H)", f"{width_ifov_mm:.3f} × {height_ifov_mm:.3f}", "mm"],
+    ["Resulting FOV (H×V)", f"{fov_h_ifov:.2f}° × {fov_v_ifov:.2f}°", "degrees"],
     ["IFOV (linear)", "0.22", "mm"],
     ["IFOV (angular)", f"{ifov_mode_mrad:.4f}", "mrad"],
-    ["Required Pixels (naive)", f"{int(pixels_x_ifov)} × {int(pixels_y_ifov)}", "px"],
-    ["Required Pixels (with tilt)", "≈3,030 × 3,608", "px"],
-    ["Resulting FOV (H×V)", f"{fov_h_ifov:.2f}° × {fov_v_ifov:.2f}°", "degrees"],
+    ["Pixel Pitch", f"{pixel_pitch_um}", "μm"],
     ["Camera Height", f"{A}", "mm"],
 ]
 
