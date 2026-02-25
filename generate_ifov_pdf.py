@@ -277,32 +277,31 @@ elements.append(Paragraph("3.2 Calculate Required Pixels", subheading_style))
 
 ifov_calc2 = """
 <b>Step 3: Calculate pixels needed (naive)</b>
-<br/>n_x = ceil(294.8 / 0.22) = ceil(1,340.0) = 1,340 pixels
-<br/>n_y = ceil(595.1 / 0.22) = ceil(2,705.0) = 2,705 pixels
+<br/>n_x = ceil(541 / 0.22) = ceil(2,459) = 2,459 pixels (B: forward-backward axis)
+<br/>n_y = ceil(268 / 0.22) = ceil(1,218) = 1,218 pixels (C: left-right axis)
 <br/><br/>
 <b>Step 4: Account for perspective distortion (detailed)</b>
-<br/>At 30° tilt angle, perspective distortion occurs due to foreshortening:
+<br/>Tilt is only around X-axis (left-right). Only the forward-backward dimension (B) is affected.
 <br/><br/>
-<b>4.1 Distortion Factor Analysis:</b>
-<br/>• At nadir (optical axis, 0°): distortion factor D = 1.0 (baseline)
-<br/>• At ±30° angle: D = 1 / cos(30°) = 1 / 0.8660 = 1.1547
-<br/>• Average across tilted FOV: D<sub>avg</sub> ≈ 1.10
+<b>4.1 Distortion Analysis:</b>
+<br/>Tilt angle: θ = 30° around X-axis
+<br/>Distortion factor along tilt direction: D = 1 / cos(θ)
+<br/>D = 1 / cos(30°) = 1 / 0.8660 = <b>1.1547</b>
 <br/><br/>
-<b>4.2 Per-Dimension Distortion:</b>
-<br/>• Along tilt direction (looking forward/backward): D<sub>tilt</sub> ≈ 1.20 (more compression)
-<br/>• Perpendicular to tilt (left/right): D<sub>perp</sub> ≈ 1.05 (minimal effect)
+<b>4.2 Dimensional Effects:</b>
+<br/>• <b>Along tilt axis (B, forward-backward):</b> AFFECTED by cos(30°) foreshortening
+<br/>  n<sub>x_adjusted</sub> = ceil(2,459 × 1.1547) = <b>2,838 pixels</b>
 <br/><br/>
-<b>4.3 Adjusted pixel calculation:</b>
-<br/>n<sub>x_adjusted</sub> = ceil(1,340 × 1.05) = ceil(1,407) = 1,407 pixels
-<br/>n<sub>y_adjusted</sub> = ceil(2,705 × 1.20) = ceil(3,246) = 3,246 pixels
+• <b>Perpendicular to tilt axis (C, left-right):</b> NOT AFFECTED by single-axis tilt
+<br/>  n<sub>y</sub> = <b>1,218 pixels</b> (unchanged)
 <br/><br/>
-<b>4.4 Additional margin for edge effects (±5%):</b>
-<br/>n<sub>x_final</sub> = ceil(1,407 × 1.05) = 1,478 pixels
-<br/>n<sub>y_final</sub> = ceil(3,246 × 1.05) = 3,408 pixels
+<b>4.3 Additional safety margin (±5% edge effects):</b>
+<br/>n<sub>x_final</sub> = ceil(2,838 × 1.05) = 2,980 pixels
+<br/>n<sub>y_final</sub> = ceil(1,218 × 1.05) = 1,279 pixels
 <br/><br/>
-<b>4.5 Final conservative estimate:</b>
-<br/>With safety factor for optical aberrations: ≈ 1,500 × 3,600 pixels
-<br/>(rounded to nearest standard resolution)
+<b>4.4 Final estimate (rounded to standard resolution):</b>
+<br/>Approximately <b>3,000 × 1,280 pixels</b> or similar standard HD variant
+<br/>(only the B dimension increased due to single-axis tilt)
 """
 elements.append(Paragraph(ifov_calc2, body_style))
 
