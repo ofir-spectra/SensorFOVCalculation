@@ -199,14 +199,25 @@ def generate_pdf_report(params_dict, output_filename=None):
             
         else:  # IFOV mode
             resolution = float(params_dict.get('Resolution', 0.22))
+            pixels_x = int(np.ceil(C_eff / resolution))
+            pixels_y = int(np.ceil(B_eff / resolution))
+            # Default to sample focal length for reference FOV calculation
+            # (IFOV mode doesn't require focal length, but showing reference FOV is useful)
+            focal_ref = 2.65  # reference focal length
+            pixel_pitch_mm_calc = pixel_pitch_um / 1000.0
+            width_mm = pixels_x * pixel_pitch_mm_calc
+            height_mm = pixels_y * pixel_pitch_mm_calc
+            fov_h_ref = 2 * np.degrees(np.arctan(width_mm / (2 * focal_ref)))
+            fov_v_ref = 2 * np.degrees(np.arctan(height_mm / (2 * focal_ref)))
             
             elements.append(Paragraph("1.1 IFOV Mode - Performance Parameters", heading_style))
             
             ifov_data = [
                 ["Parameter", "Value", "Unit"],
                 ["Required Resolution", f"{resolution:.4f}", "mm/pixel"],
-                ["Required Pixels (X)", f"{int(np.ceil(C_eff / resolution))}", "pixels"],
-                ["Required Pixels (Y)", f"{int(np.ceil(B_eff / resolution))}", "pixels"],
+                ["Required Pixels (X)", f"{pixels_x}", "pixels"],
+                ["Required Pixels (Y)", f"{pixels_y}", "pixels"],
+                ["Reference FOV for 2.65mm lens", f"{fov_h_ref:.1f}° × {fov_v_ref:.1f}°", "H × V"],
             ]
             
             ifov_table = Table(ifov_data, colWidths=[2.2*inch, 1.8*inch, 1.3*inch])

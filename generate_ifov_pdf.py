@@ -597,6 +597,15 @@ elements.append(table2)
 elements.append(Spacer(1, 0.2*inch))
 elements.append(Paragraph("6.2 IFOV Mode Results", subheading_style))
 
+# Calculate FOV for the calculated pixel count in IFOV mode
+# Using same focal length for reference
+pixels_x_ifov_int = int(pixels_x_ifov)
+pixels_y_ifov_int = int(pixels_y_ifov)
+width_ifov_mm = pixel_pitch_mm * pixels_x_ifov_int
+height_ifov_mm = pixel_pitch_mm * pixels_y_ifov_int
+fov_h_ifov = 2 * np.degrees(np.arctan(width_ifov_mm / (2 * focal_length)))
+fov_v_ifov = 2 * np.degrees(np.arctan(height_ifov_mm / (2 * focal_length)))
+
 ifov_results_data = [
     ["Metric", "Value", "Unit"],
     ["Required Resolution", "0.22", "mm/px"],
@@ -604,6 +613,7 @@ ifov_results_data = [
     ["IFOV (angular)", f"{ifov_mode_mrad:.4f}", "mrad"],
     ["Required Pixels (naive)", f"{int(pixels_x_ifov)} × {int(pixels_y_ifov)}", "px"],
     ["Required Pixels (with tilt)", "≈3,030 × 3,608", "px"],
+    ["Resulting FOV (H×V)", f"{fov_h_ifov:.2f}° × {fov_v_ifov:.2f}°", "degrees"],
     ["Camera Height", f"{A}", "mm"],
 ]
 
