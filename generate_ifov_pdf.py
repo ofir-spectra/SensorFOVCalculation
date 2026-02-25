@@ -295,13 +295,14 @@ ifov_calc2 = """
 • <b>Perpendicular to tilt axis (C, left-right):</b> NOT AFFECTED by single-axis tilt
 <br/>  n<sub>y</sub> = <b>1,218 pixels</b> (unchanged)
 <br/><br/>
-<b>4.3 Additional safety margin (±5% edge effects):</b>
-<br/>n<sub>x_final</sub> = ceil(2,838 × 1.05) = 2,980 pixels
-<br/>n<sub>y_final</sub> = ceil(1,218 × 1.05) = 1,279 pixels
+<b>4.3 Additional safety margin (±5% edge effects) - ONLY on affected axis:</b>
+<br/>Since Y-axis is unaffected by tilt, no margin needed. Apply margin only to distorted X-axis:
+<br/>n<sub>x_final</sub> = ceil(2,838 × 1.05) = <b>2,980 pixels</b>
+<br/>n<sub>y_final</sub> = <b>1,218 pixels</b> (no margin - axis was unaffected by distortion)
 <br/><br/>
 <b>4.4 Final estimate (rounded to standard resolution):</b>
-<br/>Approximately <b>3,000 × 1,280 pixels</b> or similar standard HD variant
-<br/>(only the B dimension increased due to single-axis tilt)
+<br/>Approximately <b>2,980 × 1,218 pixels</b> or similar standard resolution
+<br/>(only the B/X dimension increased due to single-axis tilt)
 """
 elements.append(Paragraph(ifov_calc2, body_style))
 

@@ -271,8 +271,11 @@ def generate_pdf_report(params_dict, output_filename=None):
             ifov_mode_mrad = (resolution / A) * 1000
             
             # Single-axis distortion (30° tilt around X-axis)
+            # Only Y-axis (forward-backward) is affected; X-axis (left-right) is NOT affected
             distortion_factor = 1 / np.cos(np.radians(tilt_deg))
             pixels_y_adjusted = int(np.ceil(pixels_y * distortion_factor))
+            # Apply 5% safety margin only to affected (distorted) dimension
+            pixels_y_final = int(np.ceil(pixels_y_adjusted * 1.05))
             
             calc_text = f"""
 <b>2.1 Required Pixels (Coverage Based):</b>
@@ -284,12 +287,16 @@ def generate_pdf_report(params_dict, output_filename=None):
 <br/>Pixels<sub>Y_adjusted</sub> = ceil({pixels_y} × {distortion_factor:.4f}) = {pixels_y_adjusted} pixels
 <br/><b>Note:</b> Only Y-axis (forward-backward) affected by X-axis tilt; X-axis (left-right) unchanged
 <br/><br/>
-<b>2.3 Angular Resolution:</b>
+<b>2.3 Safety Margin (5% edge effects - ONLY on affected axis):</b>
+<br/>Pixels<sub>Y_final</sub> = ceil({pixels_y_adjusted} × 1.05) = {pixels_y_final} pixels
+<br/>Pixels<sub>X_final</sub> = {pixels_x} pixels (unchanged - unaffected by tilt)
+<br/><br/>
+<b>2.4 Angular Resolution:</b>
 <br/>IFOV<sub>mrad</sub> = ({resolution} / {A}) × 1000
 <br/>IFOV<sub>mrad</sub> = <b>{ifov_mode_mrad:.4f} mrad</b>
 <br/><br/>
-<b>2.4 Required Sensor:</b>
-<br/>Approximately {pixels_x} × {pixels_y_adjusted} pixels
+<b>2.5 Required Sensor:</b>
+<br/>Approximately {pixels_x} × {pixels_y_final} pixels
 <br/>(or nearest standard resolution supporting this pixel count)
 """
         
