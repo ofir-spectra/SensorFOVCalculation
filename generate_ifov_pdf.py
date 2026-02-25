@@ -280,10 +280,29 @@ ifov_calc2 = """
 <br/>n_x = ceil(294.8 / 0.22) = ceil(1,340.0) = 1,340 pixels
 <br/>n_y = ceil(595.1 / 0.22) = ceil(2,705.0) = 2,705 pixels
 <br/><br/>
-<b>Step 4: Account for perspective distortion</b>
-<br/>At 30° tilt, edges have larger IFOV due to angle.
-<br/>Apply distortion factor based on cos(tilt angle).
-<br/>Adjusted pixels ≈ 1.5× to 2× depending on distortion model.
+<b>Step 4: Account for perspective distortion (detailed)</b>
+<br/>At 30° tilt angle, perspective distortion occurs due to foreshortening:
+<br/><br/>
+<b>4.1 Distortion Factor Analysis:</b>
+<br/>• At nadir (optical axis, 0°): distortion factor D = 1.0 (baseline)
+<br/>• At ±30° angle: D = 1 / cos(30°) = 1 / 0.8660 = 1.1547
+<br/>• Average across tilted FOV: D<sub>avg</sub> ≈ 1.10
+<br/><br/>
+<b>4.2 Per-Dimension Distortion:</b>
+<br/>• Along tilt direction (looking forward/backward): D<sub>tilt</sub> ≈ 1.20 (more compression)
+<br/>• Perpendicular to tilt (left/right): D<sub>perp</sub> ≈ 1.05 (minimal effect)
+<br/><br/>
+<b>4.3 Adjusted pixel calculation:</b>
+<br/>n<sub>x_adjusted</sub> = ceil(1,340 × 1.05) = ceil(1,407) = 1,407 pixels
+<br/>n<sub>y_adjusted</sub> = ceil(2,705 × 1.20) = ceil(3,246) = 3,246 pixels
+<br/><br/>
+<b>4.4 Additional margin for edge effects (±5%):</b>
+<br/>n<sub>x_final</sub> = ceil(1,407 × 1.05) = 1,478 pixels
+<br/>n<sub>y_final</sub> = ceil(3,246 × 1.05) = 3,408 pixels
+<br/><br/>
+<b>4.5 Final conservative estimate:</b>
+<br/>With safety factor for optical aberrations: ≈ 1,500 × 3,600 pixels
+<br/>(rounded to nearest standard resolution)
 """
 elements.append(Paragraph(ifov_calc2, body_style))
 
@@ -346,15 +365,15 @@ elements.append(Spacer(1, 0.15*inch))
 elements.append(Paragraph("4.2 Calculate Field of View", subheading_style))
 
 fov_calc2 = """
-<b>Step 4: Calculate angular FOV</b>
+<b>Step 4: Calculate angular FOV (with f=2.65mm for ~72° horizontal FOV)</b>
 <br/><br/>
-FOV<sub>H</sub> = 2 × arctan(3.84 / (2 × 6.0)) × (180/π)
-<br/>     = 2 × arctan(0.32) × 57.2958
-<br/>     = 2 × 17.74° = <b>35.47°</b>
+FOV<sub>H</sub> = 2 × arctan(3.84 / (2 × 2.65)) × (180/π)
+<br/>     = 2 × arctan(0.7245) × 57.2958
+<br/>     = 2 × 36.20° = <b>72.41°</b>
 <br/><br/>
-FOV<sub>V</sub> = 2 × arctan(2.16 / (2 × 6.0)) × (180/π)
-<br/>     = 2 × arctan(0.18) × 57.2958
-<br/>     = 2 × 10.20° = <b>20.40°</b>
+FOV<sub>V</sub> = 2 × arctan(2.16 / (2 × 2.65)) × (180/π)
+<br/>     = 2 × arctan(0.4075) × 57.2958
+<br/>     = 2 × 22.12° = <b>44.25°</b>
 """
 elements.append(Paragraph(fov_calc2, body_style))
 
@@ -365,9 +384,9 @@ fov_calc3 = """
 <b>Step 5: Apply focal length formula</b>
 <br/><br/>
 IFOV<sub>eff</sub> = (p × A) / f
-<br/>           = (0.002 mm × 146 mm) / 6.0 mm
-<br/>           = 0.292 / 6.0
-<br/>           = <b>0.0487 mm/pixel</b>
+<br/>           = (0.002 mm × 146 mm) / 2.65 mm
+<br/>           = 0.292 / 2.65
+<br/>           = <b>0.1102 mm/pixel</b>
 <br/><br/>
 This accounts for magnification and is independent of pixel count!
 """
@@ -410,7 +429,7 @@ C = 268  # water spot width
 margin_pct = 10
 tilt_deg = 30
 pixel_pitch_um = 2.0
-focal_length = 6.0
+focal_length = 2.65  # Updated for ~80° FOV
 sensor_px_x = 1920
 sensor_px_y = 1080
 
